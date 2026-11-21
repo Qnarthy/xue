@@ -1,11 +1,11 @@
 // Service worker : permet à l'appli de fonctionner sans connexion.
 // Pense à changer VERSION à chaque mise à jour de l'appli.
-const VERSION = 'xue-v3.0.0';
+const VERSION = 'xue-v3.0.1';
 const SHELL = [
-  './', 'index.html', 'css/style.css', 'manifest.json',
-  'js/app.js', 'js/data.js', 'js/store.js', 'js/fsrs.js', 'js/pinyin.js', 'js/audio.js',
-  'js/ui.js', 'js/ai.js', 'js/tutor.js', 'js/pitch.js', 'js/pron.js', 'js/exam.js',
-  'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon-512.png',
+  './', 'index.html', 'style.css', 'manifest.json',
+  'app.js', 'data.js', 'store.js', 'fsrs.js', 'pinyin.js', 'audio.js',
+  'ui.js', 'ai.js', 'tutor.js', 'pitch.js', 'pron.js', 'exam.js',
+  'icon-180.png', 'icon-192.png', 'icon-512.png',
   'https://cdn.jsdelivr.net/npm/hanzi-writer@3.5.0/dist/hanzi-writer.min.js',
 ];
 

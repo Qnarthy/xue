@@ -14,9 +14,7 @@ Durée : environ 10 minutes, une seule fois. C'est gratuit.
 
 ## Étape 3 : envoyer les fichiers
 1. Sur la page du dépôt, clique sur le lien **uploading an existing file**.
-2. Ouvre le dossier de l'appli sur ton PC et **glisse-dépose** dans la page :
-   - les dossiers `css`, `js` et `icons`
-   - les fichiers `index.html`, `manifest.json` et `sw.js`
+2. Ouvre le dossier de l'appli sur ton PC, sélectionne **tous les fichiers** (Ctrl+A) et **glisse-dépose**-les dans la page. Tous les fichiers sont au même niveau, sans sous-dossier.
 3. Clique en bas sur **Commit changes**.
 
 ## Étape 4 : activer GitHub Pages
