@@ -1,5 +1,5 @@
 // Petits outils d'interface partagés entre les écrans.
-import { syllables, parseSyl } from './pinyin.js';
+import { syllables, parseSyl, splitPinyin } from './pinyin.js';
 import * as st from './store.js';
 
 export const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -23,6 +23,21 @@ export function pyHtml(p, join = true) {
   const col = st.S.settings.toneColors;
   return syllables(p).map(x => `<span class="${col ? 't' + parseSyl(x).tone : ''}">${esc(x)}</span>`).join(join ? '' : ' ');
 }
+// Colore un texte pinyin libre (ex. réponse de l'IA : « Nǐ hǎo! Nǐ jiào shénme míngzi? »)
+export function pyColor(text) {
+  if (!st.S.settings.toneColors) return esc(text);
+  return String(text || '').split(/(\s+)/).map(tok => {
+    if (!tok.trim()) return tok;
+    const m = tok.match(/^([^A-Za-zÀ-ɏ]*)(.*?)([^A-Za-zÀ-ɏ]*)$/);
+    const [, pre, core, post] = m || ['', '', tok, ''];
+    if (!core) return esc(tok);
+    let syls = null;
+    for (let n = 1; n <= 6 && !syls; n++) syls = splitPinyin(core, n);
+    const parts = syls ? syls.split(' ') : [core];
+    return esc(pre) + parts.map(x => `<span class="t${parseSyl(x).tone}">${esc(x)}</span>`).join('') + esc(post);
+  }).join('');
+}
+
 // Affichage d'un mot : mode oral = pinyin en grand + caractères en petit ; mode complet = caractères + pinyin au-dessus
 export function face(w, showPy = true) {
   if (!st.isOral()) return ruby(w, showPy);

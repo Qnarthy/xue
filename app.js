@@ -162,7 +162,7 @@ function homeScreen() {
 // ================================================================
 //  Sessions d'exercices
 // ================================================================
-const PRACTICE = { ton: 15, ecoute: 15, trace: 8, pinyin: 12, dictee: 12 };
+const PRACTICE = { sens: 15, ton: 15, ecoute: 15, trace: 8, pinyin: 12, dictee: 12 };
 const FACET_OF = { dictee: 'ecoute' };
 actions.pron = () => pron.openLab();
 actions.recalib = () => { pron.recalibrate(); toast('Le calibrage sera refait au prochain atelier'); render(); };
@@ -219,6 +219,11 @@ function startSession(mode) {
   } else if (mode === 'review') {
     q = st.dueCards().slice(0, 40).map(d => ({ k: 'ex', wid: d.wid, f: d.f }));
     if (!q.length) return toast('Aucune révision pour le moment ✨');
+  } else if (mode === 'hard') {
+    const fs = ['sens', 'ecoute', ...(st.speakingOn() ? ['parler'] : [])];
+    const ws = hardList().map(([id]) => id);
+    if (!ws.length) return toast('Aucun mot difficile pour le moment ✨');
+    for (const f of fs) q.push(...shuffle([...ws]).map(wid => ({ k: 'ex', wid, f })));
   } else if (mode === 'parler') {
     if (!s.settings.speaking) { s.settings.speaking = true; st.save(); }
     s.speakPause = 0;
@@ -974,138 +979,241 @@ function openWord(id) {
 // ================================================================
 //  Progrès
 // ================================================================
+// État d'un mot : 0 pas vu · 1 découvert · 2 connu (≥ 70 % de chance de s'en souvenir dans 7 jours) · 3 maîtrisé
+function wordTier(id) {
+  if (!S().intro[id]) return 0;
+  if (st.mastery(id) >= 0.5) return 3;
+  let sum = 0, n = 0;
+  for (const f of st.activeFacets()) { const c = st.getCard(id, f); if (c && c.reps) { sum += recallIn7(c); n++; } }
+  return n && sum / n >= 0.7 ? 2 : 1;
+}
+const FACET_ICON = { sens: '🧠', ecoute: '👂', ton: '🎵', parler: '🗣️', pinyin: '⌨️', trace: '✍️' };
+const FACET_HINT = { sens: 'Reconnaître le sens', ecoute: "Comprendre à l'oral", ton: 'Entendre les tons', parler: 'Le dire à voix haute', pinyin: 'Écrire le pinyin', trace: 'Tracer les caractères' };
+
 function statsScreen() {
-  const s = S(), ids = Object.keys(s.intro);
-  const solid = ids.filter(id => st.mastery(id) >= 0.6).length;
-  const days = Object.entries(s.days);
-  const totalMin = Math.round(days.reduce((a, [, d]) => a + d.secs, 0) / 60);
-  const cut = st.dayKey(Date.now() - 30 * 86400000);
-  const last30 = days.filter(([k]) => k >= cut);
-  const rev = last30.reduce((a, [, d]) => a + d.rev, 0), ok = last30.reduce((a, [, d]) => a + d.ok, 0);
+  const s = S(), ids = Object.keys(s.intro).filter(id => W(id));
+  const tiers = [0, 0, 0, 0];
+  const tierOf = {};
+  for (const id of ids) { const t = wordTier(id); tierOf[id] = t; tiers[t]++; }
+  const known = tiers[2] + tiers[3];
+  const totalMin = Math.round(Object.values(s.days).reduce((a, d) => a + d.secs, 0) / 60);
+  const goal = s.settings.goalMin;
 
-  // 14 derniers jours (minutes)
-  const series = [];
-  for (let i = 13; i >= 0; i--) {
-    const t = Date.now() - i * 86400000, k = st.dayKey(t), d = s.days[k];
-    series.push({ k, m: d ? Math.round(d.secs / 60) : 0, lab: new Date(t - 4 * 3600000).toLocaleDateString('fr-FR', { weekday: 'narrow' }) });
-  }
-  const maxM = Math.max(s.settings.goalMin, ...series.map(x => x.m));
+  // ---- résumé
+  const nextLvl = [1, 2, 3].find(l => WORDS.filter(w => w.lvl === l).some(w => (tierOf[w.id] || 0) < 2)) || 3;
+  const lvlWords = WORDS.filter(w => w.lvl <= nextLvl);
+  const lvlKnown = lvlWords.filter(w => (tierOf[w.id] || 0) >= 2).length;
+  const hero = `<div class="pg-hero">
+    <span class="eyebrow">Ton vocabulaire</span>
+    <div class="pg-big"><b>${known}</b><span>mot${known > 1 ? 's' : ''} connu${known > 1 ? 's' : ''}</span></div>
+    <p class="pg-sub">${ids.length} découverts · ${tiers[3]} maîtrisés · ${Object.keys(s.sintro).length} phrases</p>
+    <div class="pg-goal"><div class="pg-goal-top"><span>Objectif HSK ${nextLvl}</span><b>${lvlKnown}/${lvlWords.length}</b></div>
+      <span class="pg-gtrack"><i style="width:${(lvlKnown / lvlWords.length) * 100}%"></i></span></div>
+  </div>`;
 
-  // prévision des révisions sur 7 jours
-  const fc = [];
-  const facets = new Set(st.activeFacets());
-  for (let i = 0; i < 7; i++) {
-    const end = new Date(); end.setHours(4, 0, 0, 0); const e = end.getTime() + (i + 1) * 86400000;
-    const startT = i === 0 ? 0 : end.getTime() + i * 86400000;
-    let n = 0;
-    for (const [cid, c] of Object.entries(s.cards)) if (facets.has(cid.split('|')[1]) && c.due < e && c.due >= startT) n++;
-    fc.push({ n, lab: i === 0 ? 'Auj.' : new Date(Date.now() + i * 86400000).toLocaleDateString('fr-FR', { weekday: 'short' }) });
-  }
-  const maxF = Math.max(1, ...fc.map(x => x.n));
-
-  // point fort / point faible par compétence
-  const fstats = st.activeFacets().map(f => {
-    let sum = 0, n = 0;
-    for (const id of ids) { const c = st.getCard(id, f); if (c && c.reps) { sum += recallIn7(c); n++; } }
-    return { f, v: n ? sum / n : null };
-  });
-  const valid = fstats.filter(x => x.v !== null);
-  const weakest = valid.length > 1 ? valid.reduce((a, b) => (b.v < a.v ? b : a)) : null;
-
-  const bars = (arr, max, fmt) => `<div class="chart"><div class="bars">${arr.map((x, i) => `<button data-act="bar" data-tip="${esc(fmt(x))}" class="${x.n === 0 || x.m === 0 ? 'zero' : ''}" aria-label="${esc(fmt(x))}"><i style="height:${(((x.m ?? x.n) || 0) / max) * 100}%"></i></button>`).join('')}</div>
-    <div class="xlabels">${arr.map(x => `<span>${esc(x.lab)}</span>`).join('')}</div></div>`;
+  // ---- petites tuiles
+  let rev7 = 0, ok7 = 0;
+  for (let i = 0; i < 7; i++) { const d = s.days[st.dayKey(Date.now() - i * 86400000)]; if (d) { rev7 += d.rev; ok7 += d.ok; } }
+  const fmtTime = (m) => (m >= 60 ? `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, '0')}` : `${m} min`);
+  const tiles = `<div class="pg-tiles">
+    <div class="pg-tile"><span class="pg-ic">🔥</span><b>${st.currentStreak()}</b><span>jour${st.currentStreak() > 1 ? 's' : ''} de série</span></div>
+    <div class="pg-tile"><span class="pg-ic">🎯</span><b>${rev7 ? pct(ok7 / rev7) : '—'}</b><span>réussite 7 j</span></div>
+    <div class="pg-tile"><span class="pg-ic">⏱️</span><b>${fmtTime(totalMin)}</b><span>au total</span></div>
+  </div>`;
 
   return `<div class="topbar"><h1>Progrès</h1></div>
-  <div class="kpis" style="margin-top:0">
-    <div class="kpi"><b>${ids.length}</b><span>mots vus</span></div>
-    <div class="kpi"><b>${solid}</b><span>mots ancrés</span></div>
-    <div class="kpi"><b>${rev ? pct(ok / rev) : '—'}</b><span>réussite 30 j</span></div>
-    <div class="kpi"><b>${totalMin}</b><span>min au total</span></div>
-    <div class="kpi"><b>${st.currentStreak()}</b><span>jours de série</span></div>
-    <div class="kpi"><b>${Object.keys(s.sintro).length}</b><span>phrases vues</span></div>
-  </div>
-  <div class="card"><h2>Minutes d'étude</h2><p class="muted small" style="margin:0 0 12px">14 derniers jours · objectif ${s.settings.goalMin} min</p>${bars(series, maxM, x => `${x.k.slice(8)}/${x.k.slice(5, 7)} : ${x.m} min`)}</div>
-  <div class="card"><h2>Tes compétences</h2><p class="muted small" style="margin:0 0 8px">Chance moyenne de t'en souvenir dans 7 jours (mots vus)</p>
-    ${fstats.map(x => `<div class="meter"><span class="lab">${st.FACET_LABEL[x.f]}</span><span class="track"><i style="width:${(x.v || 0) * 100}%"></i></span><span class="v">${x.v === null ? '—' : pct(x.v)}</span></div>${weakest && weakest.f === x.f ? `<div class="weak">↑ Point faible : l'appli te le fera travailler en priorité</div>` : ''}`).join('')}
-  </div>
-  <div class="card"><h2>Révisions à venir</h2><p class="muted small" style="margin:0 0 12px">Nombre d'exercices prévus par jour</p>${bars(fc, maxF, x => `${x.lab} : ${x.n} exercices`)}</div>
-  ${heatmapCard()}
+  ${hero}${tiles}
+  ${focusCard()}
+  ${weekCard(goal)}
+  ${hskCard(tierOf)}
+  ${skillsCard(ids)}
   ${toneCard()}
+  ${hardWordsCard()}
+  ${heatmapCard()}
   ${examsCard()}
-  ${hardWordsCard()}`;
+  ${forecastLine()}`;
 }
 
-// Calendrier des 12 dernières semaines (minutes d'étude par jour)
-function heatmapCard() {
-  const s = S(), goal = s.settings.goalMin;
+// Le conseil du jour : la compétence la plus faible, avec un bouton pour la travailler
+function skillStats(ids) {
+  return st.activeFacets().map(f => {
+    let sum = 0, n = 0;
+    for (const id of ids) { const c = st.getCard(id, f); if (c && c.reps) { sum += recallIn7(c); n++; } }
+    return { f, v: n ? sum / n : null, n };
+  });
+}
+function focusCard() {
+  const ids = Object.keys(S().intro).filter(id => W(id));
+  const valid = skillStats(ids).filter(x => x.v !== null && x.n >= 5);
+  if (valid.length < 2) return `<div class="pg-focus"><span class="pg-fic">🌱</span><div class="grow"><b>Tes statistiques arrivent</b><span>Fais quelques leçons : l'appli trouvera ton point faible et te dira quoi travailler.</span></div></div>`;
+  const w = valid.reduce((a, b) => (b.v < a.v ? b : a));
+  const best = valid.reduce((a, b) => (b.v > a.v ? b : a));
+  if (best.v - w.v < 0.05) return `<div class="pg-focus good"><span class="pg-fic">✨</span><div class="grow"><b>Tout est équilibré</b><span>Tes compétences sont au même niveau. Continue la leçon du jour.</span></div></div>`;
+  return `<button class="pg-focus" data-act="start" data-mode="${w.f}">
+    <span class="pg-fic">${FACET_ICON[w.f]}</span>
+    <div class="grow"><span class="eyebrow">À travailler</span><b>${st.FACET_LABEL[w.f]} : ${pct(w.v)}</b><span>C'est ta compétence la plus fragile. 5 minutes suffisent.</span></div>
+    <span class="pg-go">Go</span></button>`;
+}
+
+// Minutes de la semaine (lundi → dimanche) avec la ligne d'objectif
+function weekCard(goal) {
+  const s = S();
   const today0 = new Date(Date.now() - 4 * 3600000); today0.setHours(12, 0, 0, 0);
-  const dow = (today0.getDay() + 6) % 7; // lundi = 0
-  const start = today0.getTime() - (11 * 7 + dow) * 86400000;
-  const cells = [];
-  let active = 0;
-  for (let i = 0; i < 84; i++) {
-    const t = start + i * 86400000;
-    if (t > today0.getTime()) { cells.push('<span class="hm-cell empty"></span>'); continue; }
-    const k = st.dayKey(t + 4 * 3600000), m = Math.round((s.days[k]?.secs || 0) / 60);
-    if (m) active++;
-    const lv = m === 0 ? 0 : m < goal / 3 ? 1 : m < (2 * goal) / 3 ? 2 : m < goal ? 3 : 4;
-    const d = new Date(t).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' });
-    cells.push(`<button class="hm-cell l${lv}" data-act="bar" data-tip="${esc(d)} : ${m} min" aria-label="${esc(d)} : ${m} min"></button>`);
+  const dow = (today0.getDay() + 6) % 7;
+  const mins = (t) => Math.round((s.days[st.dayKey(t + 4 * 3600000)]?.secs || 0) / 60);
+  const days = [], last = [];
+  for (let i = 0; i < 7; i++) {
+    const t = today0.getTime() + (i - dow) * 86400000;
+    days.push({ t, m: i <= dow ? mins(t) : null, lab: 'LMMJVSD'[i], today: i === dow });
+    last.push(mins(t - 7 * 86400000));
   }
-  return `<div class="card"><h2>Calendrier</h2><p class="muted small" style="margin:0 0 12px">12 dernières semaines · ${active} jours d'étude</p>
-    <div class="chart"><div class="heatmap">${cells.join('')}</div></div>
-    <div class="hm-legend small muted">Moins ${[0, 1, 2, 3, 4].map(l => `<span class="hm-cell l${l}"></span>`).join('')} Plus · foncé = objectif atteint</div></div>`;
+  const tot = days.reduce((a, d) => a + (d.m || 0), 0);
+  const lastTot = last.slice(0, dow + 1).reduce((a, b) => a + b, 0);
+  const max = Math.max(goal * 1.25, ...days.map(d => d.m || 0));
+  const hit = days.filter(d => d.m >= goal).length;
+  const diff = tot - lastTot;
+  const cmp = lastTot || tot ? (diff >= 0 ? `<span class="pg-up">▲ ${diff} min</span> par rapport à la semaine dernière à la même date` : `<span class="pg-down">▼ ${-diff} min</span> par rapport à la semaine dernière à la même date`) : '';
+  return `<div class="card"><div class="pg-head"><h2>Cette semaine</h2><span class="pg-kpi">${tot} min</span></div>
+    <p class="muted small pg-note">Objectif atteint ${hit} jour${hit > 1 ? 's' : ''} sur 7${cmp ? ' · ' + cmp : ''}</p>
+    <div class="chart pg-week">
+      <div class="pg-wplot"><div class="pg-goalline" style="bottom:${(goal / max) * 100}%"><span>${goal} min</span></div>
+      <div class="bars">${days.map(d => {
+        const tip = `${new Date(d.t).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric' })} : ${d.m === null ? 'à venir' : d.m + ' min'}`;
+        return `<button data-act="bar" data-tip="${esc(tip)}" class="${!d.m ? 'zero' : ''} ${d.m >= goal ? 'hit' : ''}" aria-label="${esc(tip)}"><i style="height:${d.m ? Math.max(3, (d.m / max) * 100) : 0}%"></i></button>`;
+      }).join('')}</div></div>
+      <div class="xlabels">${days.map(d => `<span class="${d.today ? 'on' : ''}">${d.lab}</span>`).join('')}</div>
+    </div></div>`;
 }
 
-// Matrices de confusion des tons (oreille et voix)
+// Niveaux HSK : barre segmentée (maîtrisés, connus, découverts) dans une seule couleur
+function hskCard(tierOf) {
+  const rows = [1, 2, 3].map(l => {
+    const ws = WORDS.filter(w => w.lvl === l), n = ws.length;
+    const c = [0, 0, 0, 0]; ws.forEach(w => c[tierOf[w.id] || 0]++);
+    const seg = (k, cls, lab) => c[k] ? `<i class="${cls}" style="flex:${c[k]}" title="${lab} : ${c[k]}"></i>` : '';
+    return `<div class="pg-hsk"><div class="pg-hsk-top"><b>HSK ${l}</b><span><b>${c[2] + c[3]}</b> / ${n} connus</span></div>
+      <div class="pg-stack">${seg(3, 's3', 'Maîtrisés')}${seg(2, 's2', 'Connus')}${seg(1, 's1', 'Découverts')}<i class="s0" style="flex:${c[0]}"></i></div></div>`;
+  }).join('');
+  return `<div class="card"><h2>Niveaux HSK</h2>${rows}
+    <div class="pg-legend"><span><i class="s3"></i>Maîtrisés</span><span><i class="s2"></i>Connus</span><span><i class="s1"></i>Découverts</span></div>
+    <p class="muted small pg-note" style="margin:8px 0 0">Connu : plus de 70 % de chance de t'en souvenir dans une semaine. Maîtrisé : solide pour des semaines.</p></div>`;
+}
+
+// Compétences : chaque ligne lance un entraînement
+function skillsCard(ids) {
+  const fs = skillStats(ids);
+  return `<div class="card pg-skills"><div class="pg-head"><h2>Tes compétences</h2></div>
+    <p class="muted small pg-note">Chance de t'en souvenir dans 7 jours. Touche une ligne pour t'entraîner.</p>
+    ${fs.map(x => `<button class="pg-skill" data-act="start" data-mode="${x.f}">
+      <span class="pg-sic">${FACET_ICON[x.f]}</span>
+      <span class="grow"><span class="pg-srow"><b>${st.FACET_LABEL[x.f]}</b><span class="pg-sv">${x.v === null ? '—' : pct(x.v)}</span></span>
+        <span class="pg-strack"><i style="width:${(x.v || 0) * 100}%"></i></span>
+        <span class="pg-shint">${FACET_HINT[x.f]}</span></span>
+      <span class="chev">›</span></button>`).join('')}
+  </div>`;
+}
+
+// Tons : réussite par ton, à l'oreille et à la voix
 function toneCard() {
   const s = S();
-  const total = (M) => M.flat().reduce((a, b) => a + b, 0);
-  const mat = (M, title, sub) => {
-    if (total(M) < 4) return `<div class="tm"><b>${title}</b><p class="muted small">${sub}</p></div>`;
-    const rows = M.map((r, i) => {
-      const n = r.reduce((a, b) => a + b, 0);
-      return `<div class="tm-row"><span class="tm-h">${i + 1}</span>${r.map((v, j) => {
-        const p = n ? v / n : 0;
-        return `<span class="tm-c ${i === j ? 'diag' : ''}" style="--p:${p}" title="Ton ${i + 1} → ${j + 1} : ${Math.round(p * 100)} %">${n ? Math.round(p * 100) : '·'}</span>`;
-      }).join('')}</div>`;
-    }).join('');
-    return `<div class="tm"><b>${title}</b><div class="tm-grid"><div class="tm-row"><span class="tm-h"></span>${[1, 2, 3, 4].map(j => `<span class="tm-h">${j}</span>`).join('')}</div>${rows}</div></div>`;
-  };
-  // plus grosse confusion
+  const acc = (M, i) => { const n = M[i].reduce((a, b) => a + b, 0); return n >= 3 ? { p: M[i][i] / n, n } : null; };
+  const anyData = [0, 1, 2, 3].some(i => acc(s.toneEar, i) || acc(s.toneVoice, i));
+  const marks = ['ā', 'á', 'ǎ', 'à'], names = ['1er ton', '2e ton', '3e ton', '4e ton'], shape = ['plat et haut', 'qui monte', 'qui descend puis remonte', 'qui tombe'];
+  const cell = (a) => a ? `<span class="pg-tcell"><span class="pg-ttrack"><i style="width:${a.p * 100}%"></i></span><b>${pct(a.p)}</b></span>` : `<span class="pg-tcell none">—</span>`;
   let worst = null;
-  for (const [M, src] of [[s.toneEar, 'à l\'oreille'], [s.toneVoice, 'en parlant']]) {
+  for (const [M, src] of [[s.toneEar, "à l'oreille"], [s.toneVoice, 'en parlant']]) {
     M.forEach((r, i) => {
       const n = r.reduce((a, b) => a + b, 0); if (n < 5) return;
-      r.forEach((v, j) => { if (i !== j && v / n > 0.15 && (!worst || v / n > worst.p)) worst = { i: i + 1, j: j + 1, p: v / n, src }; });
+      r.forEach((v, j) => { if (i !== j && v / n > 0.15 && (!worst || v / n > worst.p)) worst = { i, j, p: v / n, src }; });
     });
   }
-  const ord = (n) => (n === 1 ? '1er' : n + 'e');
-  return `<div class="card"><h2>Tes tons</h2><p class="muted small" style="margin:0 0 10px">Lignes : le ton attendu · colonnes : ce que tu as choisi ou prononcé (%)</p>
-    <div class="tm-wrap">${mat(s.toneEar, '👂 Oreille', 'Fais quelques exercices de tons')}${mat(s.toneVoice, '🎙️ Voix', 'Essaie l\'atelier de prononciation')}</div>
-    ${worst ? `<p class="insight">💡 ${worst.src === 'en parlant' ? 'En parlant' : 'À l\'oreille'}, tu confonds souvent le <b>${ord(worst.i)} ton</b> avec le <b>${ord(worst.j)}</b> (${Math.round(worst.p * 100)} % des cas).</p>` : ''}</div>`;
+  const body = anyData ? `<div class="pg-tones">
+      <div class="pg-trow pg-thead"><span></span><span>👂 Oreille</span><span>🎙️ Voix</span></div>
+      ${[0, 1, 2, 3].map(i => `<div class="pg-trow"><span class="pg-tname"><span class="pg-tmark t${i + 1}">${marks[i]}</span><span><b>${names[i]}</b><small>${shape[i]}</small></span></span>${cell(acc(s.toneEar, i))}${cell(acc(s.toneVoice, i))}</div>`).join('')}
+    </div>
+    ${worst ? `<p class="insight">💡 ${worst.src === 'en parlant' ? 'En parlant' : "À l'oreille"}, ton <b>${names[worst.i]}</b> devient souvent un <b>${names[worst.j]}</b> (${Math.round(worst.p * 100)} % des cas).</p>` : ''}`
+    : `<p class="muted small pg-note" style="margin:0">Fais l'exercice 🎵 Tons ou l'atelier 🎙️ Prononciation : tu verras ici quels tons tu réussis.</p>`;
+  return `<div class="card"><div class="pg-head"><h2>Tes tons</h2>${anyData ? '<button class="pg-link" data-act="start" data-mode="ton">S\'entraîner ›</button>' : ''}</div>${body}</div>`;
 }
 
-function examsCard() {
-  const ex = S().exams;
-  if (!ex.length) return '';
-  const best = [1, 2, 3].map(l => ({ l, b: Math.max(-1, ...ex.filter(e => e.lvl === l).map(e => e.score)) }));
-  return `<div class="card"><h2>Examens blancs</h2>
-    ${best.map(({ l, b }) => `<div class="meter"><span class="lab">HSK ${l}</span><span class="track"><i style="width:${Math.max(0, b)}%;${b >= 60 ? 'background:var(--ok)' : ''}"></i></span><span class="v">${b >= 0 ? b : '—'}</span></div>`).join('')}
-    <p class="muted small" style="margin:8px 0 0">Meilleur score sur 100 · vert = réussi (60 et plus) · ${ex.length} examen${ex.length > 1 ? 's' : ''} passé${ex.length > 1 ? 's' : ''}</p></div>`;
-}
-
-function hardWordsCard() {
+function hardList() {
   const lapses = {};
   for (const [id, c] of Object.entries(S().cards)) {
     if (!c.lapses) continue;
     const wid = id.split('|')[0];
     if (W(wid)) lapses[wid] = (lapses[wid] || 0) + c.lapses;
   }
-  const top = Object.entries(lapses).sort((a, b) => b[1] - a[1]).slice(0, 8);
+  return Object.entries(lapses).sort((a, b) => b[1] - a[1]).slice(0, 8);
+}
+function hardWordsCard() {
+  const top = hardList().slice(0, 6);
   if (!top.length) return '';
-  return `<div class="card" style="padding-bottom:6px"><h2>Mots les plus difficiles</h2><p class="muted small" style="margin:0 0 6px">Ceux que tu as oubliés le plus souvent</p>
-    ${top.map(([id, n]) => { const w = W(id); return `<button class="wrow" style="padding:9px 0" data-act="word" data-id="${esc(id)}"><span class="hzf">${esc(w.h)}</span><span class="grow"><div class="py">${esc(w.p)}</div><div class="fr">${esc(w.f)}</div></span><span class="muted small">${n} oubli${n > 1 ? 's' : ''}</span></button>`; }).join('')}</div>`;
+  return `<div class="card"><div class="pg-head"><h2>Mots difficiles</h2></div>
+    <p class="muted small pg-note">Ceux que tu oublies le plus souvent</p>
+    <div class="pg-hard">${top.map(([id, n]) => { const w = W(id); return `<button class="pg-hw" data-act="word" data-id="${esc(id)}">
+      <span class="pg-hwf">${face(w, true)}</span><span class="grow pg-hwfr">${esc(w.f)}</span><span class="pg-hwn">${n}×</span></button>`; }).join('')}</div>
+    <button class="btn" data-act="start" data-mode="hard" style="margin-top:12px">Réviser ces mots</button></div>`;
+}
+
+// Calendrier des 12 dernières semaines
+function heatmapCard() {
+  const s = S(), goal = s.settings.goalMin;
+  const today0 = new Date(Date.now() - 4 * 3600000); today0.setHours(12, 0, 0, 0);
+  const dow = (today0.getDay() + 6) % 7;
+  const start = today0.getTime() - (11 * 7 + dow) * 86400000;
+  const cells = [];
+  let active = 0;
+  for (let i = 0; i < 84; i++) {
+    const t = start + i * 86400000;
+    if (t > today0.getTime()) { cells.push('<span class="hm-cell empty"></span>'); continue; }
+    const m = Math.round((s.days[st.dayKey(t + 4 * 3600000)]?.secs || 0) / 60);
+    if (m) active++;
+    const lv = m === 0 ? 0 : m < goal / 3 ? 1 : m < (2 * goal) / 3 ? 2 : m < goal ? 3 : 4;
+    const d = new Date(t).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' });
+    cells.push(`<button class="hm-cell l${lv} ${t === today0.getTime() ? 'today' : ''}" data-act="bar" data-tip="${esc(d)} : ${m} min" aria-label="${esc(d)} : ${m} min"></button>`);
+  }
+  const months = [];
+  for (let w = 0; w < 12; w++) {
+    const d = new Date(start + w * 7 * 86400000);
+    const prev = w ? new Date(start + (w - 1) * 7 * 86400000) : null;
+    const nx = new Date(start + (w + 1) * 7 * 86400000);
+    months.push((prev ? prev.getMonth() !== d.getMonth() : nx.getMonth() === d.getMonth()) ? d.toLocaleDateString('fr-FR', { month: 'short' }).replace('.', '') : '');
+  }
+  return `<div class="card"><div class="pg-head"><h2>Régularité</h2><span class="pg-kpi">${active} j</span></div>
+    <p class="muted small pg-note">Jours d'étude sur les 12 dernières semaines</p>
+    <div class="chart pg-cal">
+      <div class="pg-months"><span></span>${months.map(m => `<span>${m}</span>`).join('')}</div>
+      <div class="pg-calgrid"><div class="pg-dows">${'LMMJVSD'.split('').map((d, i) => `<span>${i % 2 ? '' : d}</span>`).join('')}</div><div class="heatmap">${cells.join('')}</div></div>
+    </div>
+    <div class="hm-legend small muted">Moins ${[0, 1, 2, 3, 4].map(l => `<span class="hm-cell l${l}"></span>`).join('')} Plus <span class="grow"></span>foncé = objectif atteint</div></div>`;
+}
+
+function examsCard() {
+  const ex = S().exams;
+  if (!ex.length) return '';
+  const rows = [1, 2, 3].map(l => {
+    const mine = ex.filter(e => e.lvl === l);
+    if (!mine.length) return '';
+    const b = Math.max(...mine.map(e => e.score));
+    return `<div class="pg-exam"><b>HSK ${l}</b><span class="pg-strack"><i style="width:${b}%"></i><em style="left:60%"></em></span><span class="pg-ev ${b >= 60 ? 'ok' : ''}">${b}${b >= 60 ? ' ✓' : ''}</span></div>`;
+  }).join('');
+  return `<div class="card"><div class="pg-head"><h2>Examens blancs</h2><button class="pg-link" data-act="exam">Passer ›</button></div>
+    <p class="muted small pg-note">Meilleur score sur 100 · réussite à 60 (le trait)</p>${rows}</div>`;
+}
+
+function forecastLine() {
+  const s = S(), facets = new Set(st.activeFacets());
+  const end = new Date(); end.setHours(4, 0, 0, 0);
+  const t1 = end.getTime() + 2 * 86400000, t7 = end.getTime() + 8 * 86400000;
+  let tom = 0, week = 0;
+  const tomStart = end.getTime() + 86400000;
+  for (const [cid, c] of Object.entries(s.cards)) {
+    if (!facets.has(cid.split('|')[1]) || !c.reps) continue;
+    if (c.due >= tomStart && c.due < t1) tom++;
+    if (c.due < t7) week++;
+  }
+  if (!week) return '';
+  return `<p class="pg-fore">📅 Demain : <b>${tom}</b> révision${tom > 1 ? 's' : ''} · 7 prochains jours : <b>${week}</b></p>`;
 }
 actions.bar = (el) => {
   const chart = el.closest('.chart');
@@ -1157,7 +1265,7 @@ function settingsScreen() {
     </div>
     <input type="file" id="impfile" accept=".json,application/json" hidden>
   </div>
-  <p class="muted small" style="text-align:center;margin-top:24px">Xué v4.1 · ${WORDS.length} mots HSK 1-3 · ${SENTENCES.length} phrases · Mémoire FSRS</p>`;
+  <p class="muted small" style="text-align:center;margin-top:24px">Xué v4.2 · ${WORDS.length} mots HSK 1-3 · ${SENTENCES.length} phrases · Mémoire FSRS</p>`;
 }
 after.settings = () => {
   tutor.afterSettings();

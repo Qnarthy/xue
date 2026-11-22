@@ -16,13 +16,20 @@ if ('speechSynthesis' in window) {
 export function hasVoice() { return 'speechSynthesis' in window; }
 export function voiceName() { return voice ? voice.name : 'voix par défaut'; }
 
-export function speak(text, rate) {
-  if (!('speechSynthesis' in window)) return;
+// onEnd : appelé quand la voix a fini de parler (avec une sécurité si l'événement ne vient jamais)
+export function speak(text, rate, onEnd) {
+  if (!('speechSynthesis' in window)) { onEnd?.(); return; }
   speechSynthesis.cancel();
   const u = new SpeechSynthesisUtterance(text);
   u.lang = 'zh-CN';
   if (voice) u.voice = voice;
   u.rate = rate || S.settings.rate;
+  if (onEnd) {
+    let done = false;
+    const fin = () => { if (!done) { done = true; clearTimeout(t); onEnd(); } };
+    const t = setTimeout(fin, 1500 + [...text].length * 380 / u.rate);
+    u.onend = fin; u.onerror = fin;
+  }
   speechSynthesis.speak(u);
 }
 

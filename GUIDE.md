@@ -59,6 +59,12 @@ Le détecteur de tons est un **miroir**, pas un juge. Il marche bien sur les mot
 - **Rythme intelligent** : moins de mots nouveaux quand tu oublies beaucoup, plus quand tout est solide. Les mots que tu oublies souvent sont réexpliqués.
 - **Prof IA** : ce que tu dis au micro part tout de suite, comme une vraie conversation.
 
+## Les nouveautés de la V4.2
+- **🤖 Prof IA refait** : choisis une scène, puis **📞 Appel vocal** (tu parles, il te répond à voix haute et le micro se relance tout seul, comme au téléphone) ou **💬 Écrire**. Sous chaque réponse : 🔊 réécouter, 🐢 plus lent, Traduire. Ce que tu as dit est corrigé juste en dessous. 💡 Idées te propose des réponses si tu bloques.
+- **📊 Progrès refait** : tes mots *connus* et *maîtrisés*, ton objectif HSK, tes minutes de la semaine avec la ligne d'objectif, ta réussite pour chaque ton, et ton calendrier.
+- **Touche une compétence** dans Progrès (Sens, Écoute, Tons, Parler) pour t'entraîner dessus. La carte « À travailler » te montre ta compétence la plus faible.
+- **Réviser ces mots** : une séance spéciale sur tes mots les plus difficiles.
+
 ## Partager l'appli à un ami
 Envoie-lui simplement l'adresse **https://qnarthy.github.io/xue/**. Il l'installe comme toi (Safari → Partager → Sur l'écran d'accueil). Chacun a ses propres progrès sur son téléphone. Pour le prof IA, il crée **sa propre clé Groq** : ne partage jamais la tienne.
 
