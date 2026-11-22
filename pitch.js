@@ -26,6 +26,35 @@ export function startRecording(maxMs = 4000) {
   };
 }
 
+// Enregistre et s'arrête tout seul après un silence (une fois que tu as parlé).
+// onLevel(0..1) permet d'animer le bouton pendant que tu parles.
+export async function recordAuto({ maxMs = 5000, silenceMs = 900, onLevel } = {}) {
+  const rec = startRecording(maxMs);
+  try {
+    actx ||= new (window.AudioContext || window.webkitAudioContext)();
+    if (actx.state === 'suspended') await actx.resume();
+    const src = actx.createMediaStreamSource(stream);
+    const an = actx.createAnalyser(); an.fftSize = 1024;
+    src.connect(an);
+    const buf = new Float32Array(an.fftSize);
+    const t0 = Date.now();
+    let floor = 0.004, spoke = false, lastVoice = 0, n = 0;
+    const tick = setInterval(() => {
+      an.getFloatTimeDomainData(buf);
+      let e = 0; for (let i = 0; i < buf.length; i++) e += buf[i] * buf[i];
+      const rms = Math.sqrt(e / buf.length);
+      if (Date.now() - t0 < 250) { floor = Math.max(floor, rms); return; } // bruit de fond
+      n++;
+      const thr = Math.max(0.012, floor * 2.5);
+      onLevel?.(Math.min(1, rms / (thr * 4)));
+      if (rms > thr) { spoke = true; lastVoice = Date.now(); }
+      else if (spoke && Date.now() - lastVoice > silenceMs) rec.stop();
+    }, 50);
+    rec.done.then(() => { clearInterval(tick); try { src.disconnect(); } catch (e) { /* déjà fait */ } });
+  } catch (e) { /* sans analyse, on garde l'arrêt manuel ou au bout du temps maximum */ }
+  return rec;
+}
+
 // ---------- Détection de la hauteur ----------
 let actx;
 export async function decode(blob) {

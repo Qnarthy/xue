@@ -1,12 +1,16 @@
 import { WORDS, WORD_BY_ID } from './data.js';
+import { SENTENCES, SENT_BY_ID } from './sentences.js';
 import * as st from './store.js';
 import { speak, sfx, voiceName } from './audio.js';
 import { syllables, parseSyl, checkPinyin, numToMarks, toneAccepted, toneSvg, TONE_NAME } from './pinyin.js';
 import { recallNow, recallIn7 } from './fsrs.js';
-import { esc, shuffle, pct, toast, ruby, actions, dispatchClick, ui, closeModal, levelLabel } from './ui.js';
+import { esc, shuffle, pct, toast, ruby, face, pyHtml, sentHtml, actions, dispatchClick, ui, closeModal, levelLabel } from './ui.js';
 import * as tutor from './tutor.js';
 import * as pron from './pron.js';
 import * as exam from './exam.js';
+import * as oral from './oral.js';
+import { openMic, closeMic, recordAuto, analyzeWord, spokenTones } from './pitch.js';
+import { transcribe, hasKey } from './ai.js';
 
 const app = document.getElementById('app');
 const S = () => st.S;
@@ -31,9 +35,17 @@ function render() {
 }
 ui.rerender = render;
 
+const ICONS = {
+  home: '<path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z"/>',
+  words: '<path d="M4 4.5A1.5 1.5 0 0 1 5.5 3H11v18H5.5A1.5 1.5 0 0 1 4 19.5zM13 3h5.5A1.5 1.5 0 0 1 20 4.5v15a1.5 1.5 0 0 1-1.5 1.5H13z"/>',
+  ai: '<path d="M4 5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H9l-5 4z"/><path d="M9 10h.01M15 10h.01" stroke-width="3"/>',
+  stats: '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
+  settings: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/>',
+};
+const icon = (k) => `<svg class="ico" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">${ICONS[k]}</svg>`;
 function nav() {
-  const items = [['home', '🏠', 'Accueil'], ['words', '📖', 'Mots'], ['ai', '🤖', 'Prof IA'], ['stats', '📊', 'Progrès'], ['settings', '⚙️', 'Réglages']];
-  return `<nav class="nav">${items.map(([k, ic, l]) => `<button data-act="tab" data-tab="${k}" class="${tab === k ? 'on' : ''}"><span class="ic">${ic}</span>${l}</button>`).join('')}</nav>`;
+  const items = [['home', 'Accueil'], ['words', 'Mots'], ['ai', 'Prof IA'], ['stats', 'Progrès'], ['settings', 'Réglages']];
+  return `<nav class="nav">${items.map(([k, l]) => `<button data-act="tab" data-tab="${k}" class="${tab === k ? 'on' : ''}">${icon(k)}${l}</button>`).join('')}</nav>`;
 }
 
 const after = {};
@@ -76,26 +88,57 @@ actions.onb = (el) => {
 // ================================================================
 function homeScreen() {
   const s = S(), t = st.today();
-  const due = st.dueCards();
-  const newW = st.nextNewWords(s.settings.newPerLesson);
+  const oral = st.isOral();
+  const due = st.dueCards(), sdue = st.dueSentences();
+  const pace = st.smartPace();
+  const newW = st.nextNewWords(pace.n);
+  const newS = st.nextNewSentences(s.settings.newSentences, newW.map(w => w.id));
   const mins = Math.floor(t.secs / 60), goal = s.settings.goalMin;
+  const paceMsg = pace.why === 'fast' ? `🚀 ${Math.round(pace.acc * 100)} % de réussite : on accélère` : pace.why === 'slow' ? '🧠 On consolide : moins de mots nouveaux' : pace.why === 'pause' ? '🧠 Révisions d\'abord : pas de mot nouveau' : '';
   const lv = st.level();
   const streak = st.currentStreak();
   const introduced = Object.keys(s.intro).length;
-  const C = 2 * Math.PI * 32, frac = Math.min(1, mins / goal);
+  const C = 2 * Math.PI * 26, frac = Math.min(1, mins / goal);
   const leftNew = WORDS.length - introduced;
+  const nRev = Math.min(due.length, newW.length ? 12 : 25) + Math.min(sdue.length, newW.length ? 6 : 12);
+  const hour = new Date().getHours();
+  const [hello, helloPy] = hour < 5 || hour >= 18 ? ['晚上好', 'wǎn shang hǎo'] : hour < 12 ? ['早上好', 'zǎo shang hǎo'] : ['你好', 'nǐ hǎo'];
 
+  const ring = `<div class="ring">
+      <svg width="64" height="64" viewBox="0 0 64 64"><circle cx="32" cy="32" r="26" fill="none" stroke="rgba(255,255,255,.28)" stroke-width="6"/>
+      <circle cx="32" cy="32" r="26" fill="none" stroke="#fff" stroke-width="6" stroke-linecap="round" stroke-dasharray="${C}" stroke-dashoffset="${C * (1 - frac)}"/></svg>
+      <div class="lbl"><div>${mins}<small>/${goal} min</small></div></div></div>`;
   let hero;
-  if (newW.length || due.length) {
-    hero = `<div class="card hero">
-      <h2>Leçon du jour</h2>
-      <p class="muted" style="margin:0 0 14px">${newW.length ? `${newW.length} nouveaux mots` : 'Pas de nouveau mot'} · ${Math.min(due.length, newW.length ? 15 : 30)} révisions</p>
-      <button class="btn" data-act="start" data-mode="lesson">${introduced ? 'Continuer' : 'Commencer'} ▸</button>
+  if (newW.length || due.length || sdue.length || newS.length) {
+    const chips = [newW.length && `${newW.length} mots`, newS.length && `${newS.length} phrases`, nRev && `${nRev} révisions`].filter(Boolean);
+    hero = `<div class="hero">
+      <div class="hero-top"><div class="grow"><span class="eyebrow">Leçon du jour</span>
+        <h2>${introduced ? 'On continue ?' : 'Première leçon'}</h2>
+        <div class="hero-chips">${chips.map(c => `<span>${c}</span>`).join('')}</div>${paceMsg ? `<div class="hero-pace">${paceMsg}</div>` : ''}</div>${ring}</div>
+      <button class="btn white" data-act="start" data-mode="lesson">${introduced ? 'Continuer' : 'Commencer'}<span class="arrow">→</span></button>
     </div>`;
   } else {
-    hero = `<div class="card hero"><h2>Tout est à jour 🎉</h2>
-      <p class="muted" style="margin:0">${leftNew ? `Limite de nouveaux mots atteinte aujourd'hui. Tu peux t'entraîner librement ci-dessous.` : `Tu as vu tous les mots du HSK 3 !`}</p></div>`;
+    hero = `<div class="hero"><div class="hero-top"><div class="grow"><span class="eyebrow">Leçon du jour</span><h2>Tout est à jour 🎉</h2>
+      <p class="hero-sub">${leftNew ? 'Limite de nouveaux mots atteinte. Entraîne-toi librement ci-dessous.' : 'Tu as vu tous les mots du HSK 3 !'}</p></div>${ring}</div></div>`;
   }
+  const tile = (act, mode, ic, color, title, sub, badge = '') => `<button class="tile" data-act="${act}" ${mode ? `data-${act === 'tab' ? 'tab' : 'mode'}="${mode}"` : ''}>
+      <span class="tic" style="--c:${color}">${ic}</span><span class="grow"><b>${title}</b><span class="sub">${sub}</span></span>${badge}</button>`;
+  const sSeen = Object.keys(s.sintro).length;
+  const tiles = [
+    tile('start', 'parler', '🗣️', '#1F9D55', 'Parler', 'Dis-le à voix haute', s.settings.speaking && due.some(d => d.f === 'parler') ? `<span class="badge">${due.filter(d => d.f === 'parler').length}</span>` : ''),
+    tile('start', 'review', '🔁', '#E5484D', 'Révisions', 'Les mots à revoir', due.length ? `<span class="badge">${due.length}</span>` : ''),
+    tile('start', 'phrases', '💬', '#3E7BFA', 'Phrases', sSeen ? `${sSeen} phrases vues` : 'Phrases du quotidien', sdue.length ? `<span class="badge">${sdue.length}</span>` : ''),
+    tile('start', 'ecoute', '👂', '#8B5CF6', 'Écoute', "Comprendre à l'oral"),
+    tile('start', 'ton', '🎵', '#F59E0B', 'Tons', 'Entraîne ton oreille'),
+    tile('pron', '', '🎙️', '#10B981', 'Prononciation', 'Ta courbe de tons'),
+    tile('start', 'dictee', '🎧', '#0EA5E9', 'Dictée', 'Écrire ce que tu entends'),
+    ...(oral ? [] : [
+      tile('start', 'pinyin', '⌨️', '#64748B', 'Pinyin', 'Écrire la prononciation'),
+      tile('start', 'trace', '✍️', '#B45309', 'Écriture', 'Tracer les caractères'),
+    ]),
+    tile('exam', '', '📝', '#DB2777', 'Examen HSK', 'Examen blanc noté'),
+    tile('tab', 'ai', '🤖', '#0F766E', 'Prof IA', 'Jeux de rôle, histoires'),
+  ].join('');
   const lvls = [1, 2, 3].map(l => {
     const ws = WORDS.filter(w => w.lvl === l);
     const seen = ws.filter(w => s.intro[w.id]).length;
@@ -105,37 +148,15 @@ function homeScreen() {
 
   return `
   <div class="topbar">
-    <h1>学 Xué</h1>
+    <div class="grow"><div class="hello-py">${pyHtml(helloPy, false)}</div><div class="hello hzf">${hello}</div></div>
     <span class="pill ${streak ? 'fire' : 'dim'}" title="Série de jours">🔥 ${streak}</span>
-    <span class="pill" title="Points d'expérience">⭐ ${s.xp}</span>
-  </div>
-  <div class="card goal">
-    <div class="ring">
-      <svg width="76" height="76" viewBox="0 0 76 76"><circle cx="38" cy="38" r="32" fill="none" stroke="var(--line)" stroke-width="8"/>
-      <circle cx="38" cy="38" r="32" fill="none" stroke="${frac >= 1 ? 'var(--ok)' : 'var(--brand)'}" stroke-width="8" stroke-linecap="round" stroke-dasharray="${C}" stroke-dashoffset="${C * (1 - frac)}"/></svg>
-      <div class="lbl"><div>${mins}<small>/ ${goal} min</small></div></div>
-    </div>
-    <div class="grow">
-      <b>${frac >= 1 ? 'Objectif atteint ! 💪' : 'Objectif du jour'}</b>
-      <div class="muted small">Niveau ${lv.n} · ${lv.into}/${lv.need} XP</div>
-      <div class="lvlbar"><i style="width:${(lv.into / lv.need) * 100}%"></i></div>
-    </div>
+    <span class="pill" title="Niveau ${lv.n} · ${lv.into}/${lv.need} XP">⭐ ${s.xp}</span>
   </div>
   ${hero}
-  <p class="sec-title">Entraînement</p>
-  <div class="tiles">
-    <button class="tile" data-act="start" data-mode="review"><span class="ic">🔁</span><b>Révisions</b><span class="muted small">Les mots à revoir</span>${due.length ? `<span class="badge">${due.length}</span>` : ''}</button>
-    <button class="tile" data-act="start" data-mode="ton"><span class="ic">🎵</span><b>Tons</b><span class="muted small">Entraîne ton oreille</span></button>
-    <button class="tile" data-act="start" data-mode="ecoute"><span class="ic">👂</span><b>Écoute</b><span class="muted small">Reconnaître à l'oral</span></button>
-    <button class="tile" data-act="start" data-mode="trace"><span class="ic">✍️</span><b>Écriture</b><span class="muted small">Tracer les caractères</span></button>
-    <button class="tile" data-act="start" data-mode="pinyin"><span class="ic">⌨️</span><b>Pinyin</b><span class="muted small">Écrire la prononciation</span></button>
-    <button class="tile" data-act="start" data-mode="dictee"><span class="ic">🎧</span><b>Dictée</b><span class="muted small">Écrire ce que tu entends</span></button>
-    <button class="tile" data-act="pron"><span class="ic">🎙️</span><b>Prononciation</b><span class="muted small">Ta courbe de tons</span></button>
-    <button class="tile" data-act="exam"><span class="ic">📝</span><b>Examen HSK</b><span class="muted small">Examen blanc noté</span></button>
-    <button class="tile" data-act="tab" data-tab="ai"><span class="ic">🤖</span><b>Prof IA</b><span class="muted small">Jeux de rôle, histoires</span></button>
-  </div>
+  <p class="sec-title">S'entraîner</p>
+  <div class="tiles">${tiles}</div>
   <p class="sec-title">Progression HSK</p>
-  <div class="card">${lvls}<p class="muted small" style="margin:6px 0 0">Clair : mots vus · Foncé : mots bien ancrés</p></div>`;
+  <div class="card">${lvls}<p class="muted small" style="margin:6px 0 0">Clair : mots vus · Foncé : mots bien ancrés · Niveau ${lv.n}</p></div>`;
 }
 
 // ================================================================
@@ -147,26 +168,88 @@ actions.pron = () => pron.openLab();
 actions.recalib = () => { pron.recalibrate(); toast('Le calibrage sera refait au prochain atelier'); render(); };
 actions.exam = () => exam.chooseLevel();
 
+// mélange régulièrement les éléments de b dans a
+function interleave(a, b) {
+  if (!b.length) return a;
+  const out = [], step = Math.max(1, Math.floor(a.length / (b.length + 1)));
+  let j = 0;
+  a.forEach((x, i) => { out.push(x); if ((i + 1) % step === 0 && j < b.length) out.push(b[j++]); });
+  return out.concat(b.slice(j));
+}
+
+// bloc d'apprentissage des nouvelles phrases : présentation + construction, puis écoute un peu plus tard
+function sentenceBlock(newS) {
+  const first = [], later = [];
+  newS.forEach(x => { first.push({ k: 'sintro', sid: x.id }); if (x.toks.filter(t => !t.punct).length >= 2) first.push({ k: 'sx', sid: x.id, f: 'construire' }); });
+  newS.forEach(x => later.push({ k: 'sx', sid: x.id, f: 'ecoute' }));
+  if (S().settings.speaking) newS.forEach(x => later.push({ k: 'sx', sid: x.id, f: 'parler' }));
+  return { first, later };
+}
+
 function startSession(mode) {
   const s = S();
   const facets = st.activeFacets();
   let q = [];
   if (mode === 'lesson') {
-    const newW = st.nextNewWords(s.settings.newPerLesson);
-    const due = st.dueCards();
-    const rev = due.slice(0, newW.length ? 15 : 30).map(d => ({ k: 'ex', wid: d.wid, f: d.f }));
+    const newW = st.nextNewWords(st.smartPace().n);
+    const newS = st.nextNewSentences(s.settings.newSentences, newW.map(w => w.id));
+    const due = st.dueCards(), sdue = st.dueSentences();
+    const rev = [];
+    // mots souvent oubliés : on les réexplique (une fois tous les 3 jours) avant de les retester
+    for (const d of due.slice(0, newW.length ? 12 : 25)) {
+      if (d.c.lapses >= 4 && Date.now() - (s.reteach[d.wid] || 0) > 3 * 86400000 && !rev.some(x => x.k === 'intro' && x.wid === d.wid)) {
+        rev.push({ k: 'intro', wid: d.wid, reteach: true });
+      }
+      rev.push({ k: 'ex', wid: d.wid, f: d.f });
+    }
+    const srev = sdue.slice(0, newW.length ? 6 : 12).map(d => ({ k: 'sx', sid: d.sid, f: d.f }));
+    const mixed = interleave(rev, srev);
     for (let i = 0; i < newW.length; i += 2) {
       const grp = newW.slice(i, i + 2);
       grp.forEach(w => { q.push({ k: 'intro', wid: w.id }); q.push({ k: 'ex', wid: w.id, f: 'sens' }); });
       for (const f of facets.slice(1)) {
         grp.forEach(w => q.push({ k: 'ex', wid: w.id, f }));
-        if (rev.length) q.push(rev.shift());
+        if (mixed.length) q.push(mixed.shift());
       }
     }
-    q.push(...rev);
+    const sb = sentenceBlock(newS);
+    q.push(...sb.first);
+    q.push(...interleave(mixed, sb.later));
+    if (!q.length) return toast('Rien à faire pour le moment ✨');
   } else if (mode === 'review') {
     q = st.dueCards().slice(0, 40).map(d => ({ k: 'ex', wid: d.wid, f: d.f }));
     if (!q.length) return toast('Aucune révision pour le moment ✨');
+  } else if (mode === 'parler') {
+    if (!s.settings.speaking) { s.settings.speaking = true; st.save(); }
+    s.speakPause = 0;
+    const known = Object.keys(s.intro).filter(id => W(id));
+    if (known.length < 4) return toast('Apprends d\'abord quelques mots dans la leçon du jour');
+    const now = Date.now();
+    const wd = st.dueCards().filter(d => d.f === 'parler').slice(0, 6).map(d => ({ k: 'ex', wid: d.wid, f: 'parler' }));
+    const sd = st.dueSentences().filter(d => d.f === 'parler').slice(0, 6).map(d => ({ k: 'sx', sid: d.sid, f: 'parler' }));
+    const have = new Set([...wd.map(x => x.wid), ...sd.map(x => x.sid)]);
+    // on complète avec les mots et phrases les plus fragiles à l'oral
+    const fillW = known.filter(id => !have.has(id)).map(id => ({ id, r: recallNow(st.getCard(id, 'parler'), now) + Math.random() * 0.25 }))
+      .sort((a, b) => a.r - b.r).slice(0, Math.max(0, 7 - wd.length)).map(x => ({ k: 'ex', wid: x.id, f: 'parler' }));
+    const seenS = Object.keys(s.sintro).filter(id => SENT_BY_ID[id] && !have.has(id));
+    const fillS = seenS.map(id => ({ id, r: recallNow(st.getSCard(id, 'parler'), now) + Math.random() * 0.25 }))
+      .sort((a, b) => a.r - b.r).slice(0, Math.max(0, 6 - sd.length)).map(x => ({ k: 'sx', sid: x.id, f: 'parler' }));
+    q = interleave([...wd, ...fillW], [...sd, ...fillS]);
+  } else if (mode === 'phrases') {
+    const seen = Object.keys(s.sintro).filter(id => SENT_BY_ID[id]);
+    const due = st.dueSentences().slice(0, 14).map(d => ({ k: 'sx', sid: d.sid, f: d.f }));
+    const newS = st.nextNewSentences(due.length >= 8 ? 2 : 4);
+    const sb = sentenceBlock(newS);
+    let extra = [];
+    if (due.length + newS.length * 2 < 10 && seen.length) {
+      // pas assez de révisions dues : on reprend les phrases les plus fragiles
+      const dueIds = new Set(due.map(d => d.sid + d.f));
+      extra = seen.flatMap(id => st.SFACETS.map(f => ({ sid: id, f, r: recallNow(st.getSCard(id, f)) + Math.random() * 0.2 })))
+        .filter(x => !dueIds.has(x.sid + x.f)).sort((a, b) => a.r - b.r).slice(0, 10 - due.length)
+        .map(x => ({ k: 'sx', sid: x.sid, f: x.f }));
+    }
+    q = [...sb.first, ...interleave([...due, ...extra], sb.later)];
+    if (!q.length) return toast('Apprends d\'abord quelques mots : les phrases arrivent avec eux');
   } else {
     if (mode === 'trace' && !s.settings.trace) return toast('L\'écriture est désactivée dans les réglages');
     const known = Object.keys(s.intro);
@@ -177,13 +260,15 @@ function startSession(mode) {
       .slice(0, PRACTICE[mode])
       .map(x => ({ k: 'ex', wid: x.wid, f: FACET_OF[mode] || mode, v: FACET_OF[mode] ? mode : undefined }));
   }
-  // évite deux fois de suite le même mot sur la même facette
-  sess = { mode, q, i: 0, total: q.length, ok: 0, ko: 0, xp: 0, combo: 0, best: 0, t0: Date.now(), tItem: Date.now(), learned: [], state: null };
+  sess = { mode, q, i: 0, total: q.length, ok: 0, ko: 0, xp: 0, combo: 0, best: 0, t0: Date.now(), tItem: Date.now(), learned: [], slearned: [], state: null };
   render();
 }
 
 function quitSession() {
   if (sess && sess.i > 0 && !confirm('Quitter la session ? Tes réponses sont déjà enregistrées.')) return;
+  clearTimeout(sess?.state?.auto);
+  sess?.state?.sp?.rec?.stop();
+  closeMic();
   logTime(); sess = null; render();
 }
 actions.quit = quitSession;
@@ -202,37 +287,83 @@ function sessTop() {
 function renderSession() {
   if (sess.i >= sess.q.length) return renderEnd();
   const it = sess.q[sess.i];
-  const w = W(it.wid);
-  sess.state = { item: it, w, answered: false, t: Date.now() };
+  const w = it.wid ? W(it.wid) : null, sn = it.sid ? SENT_BY_ID[it.sid] : null;
+  if ((it.wid && !w) || (it.sid && !sn)) { sess.i++; return renderSession(); }
+  if (it.f === 'parler' && (!st.speakingOn() || sess.noMic)) { sess.i++; return renderSession(); }
+  sess.state = { item: it, w, sn, answered: false, t: Date.now() };
   let body;
   if (it.k === 'intro') body = introView(w);
+  else if (it.k === 'sintro') body = sIntroView(sn);
+  else if (it.k === 'sx') body = SEX[it.f].view(sn, it);
   else body = EX[it.v || it.f].view(w, it);
   app.innerHTML = `<div class="sess">${sessTop()}<div class="sess-body">${body}</div></div>`;
   if (it.k === 'intro') introAfter(w);
+  else if (it.k === 'sintro') sIntroAfter(sn);
+  else if (it.k === 'sx') SEX[it.f].after?.(sn, it);
   else EX[it.v || it.f].after?.(w, it);
+}
+
+// boutons d'écoute (normal + lent)
+const spk = (text, big) => `<button class="spk ${big ? 'big' : ''}" data-act="speak" data-text="${esc(text)}" aria-label="Écouter">🔊</button><button class="spk slow" data-act="speak" data-slow="1" data-text="${esc(text)}" aria-label="Écouter lentement">🐢</button>`;
+
+// phrase d'exemple contenant le mot (la plus courte)
+function exampleFor(w) {
+  return SENTENCES.filter(x => x.toks.some(t => t.wid === w.id) && x.toks.length > 1).sort((a, b) => a.toks.length - b.toks.length)[0];
 }
 
 // ---------- Nouveau mot ----------
 function introView(w) {
   const tones = syllables(w.p).map(parseSyl).filter(x => x.hasVowel);
-  return `<span class="q-tag">Nouveau mot · ${levelLabel(w)}</span>
-  <div class="prompt">${ruby(w, true)}
-    <div class="fr" style="margin-top:6px">${esc(w.f)}</div>
-    <div><button class="spk" data-act="speak" data-text="${esc(w.h)}" aria-label="Écouter">🔊</button><button class="spk" data-act="speak" data-slow="1" data-text="${esc(w.h)}" aria-label="Écouter lentement">🐢</button></div>
+  const ex = exampleFor(w);
+  const oral = st.isOral();
+  const re = sess?.state?.item?.reteach;
+  return `<span class="q-tag ${re ? 'gold' : ''}">${re ? 'Mot difficile · on le revoit' : 'Nouveau mot · ' + levelLabel(w)}</span>
+  <div class="prompt intro">${oral ? face(w) : ruby(w, true)}
+    <div class="fr">${esc(w.f)}</div>
+    <div>${spk(w.h)}</div>
   </div>
-  <div class="writers" id="writers"></div>
-  <div class="intro-tones">${tones.map(t => `<div>${toneSvg(t.tone, 34)}${TONE_NAME[t.tone]}</div>`).join('')}</div>
-  <div class="actions" style="margin-top:auto"><button class="btn" data-act="introok">J'ai compris ▸</button></div>`;
+  ${oral ? '' : '<div class="writers" id="writers"></div>'}
+  <div class="intro-tones">${tones.map(t => `<div class="t${t.tone}">${toneSvg(t.tone, 30)}<span>${TONE_NAME[t.tone]}</span></div>`).join('')}</div>
+  ${ex ? `<button class="example" data-act="speak" data-text="${esc(ex.text)}"><span class="eyebrow">Exemple 🔊</span>${sentHtml(ex)}<span class="small muted">${esc(ex.fr)}</span></button>` : ''}
+  ${re && S().settings.groqKey ? `<button class="btn ghost" data-act="explain" data-id="${esc(w.id)}" style="margin-top:10px">🤖 Une astuce pour le retenir</button>` : ''}
+  <div class="actions" style="margin-top:auto"><button class="btn" data-act="introok">J'ai compris</button></div>`;
 }
 function introAfter(w) {
+  if (sess.state.item.reteach) { S().reteach[w.id] = Date.now(); st.save(); setTimeout(() => speak(w.h), 250); return; }
   st.introduce(w.id);
   st.today().nw++;
   sess.learned.push(w.id);
   st.save();
   setTimeout(() => speak(w.h), 250);
-  mountWriters(document.getElementById('writers'), w.h, 'animate');
+  if (!st.isOral()) mountWriters(document.getElementById('writers'), w.h, 'animate');
 }
 actions.introok = () => { logTime(); sess.i++; renderSession(); };
+
+// ---------- Nouvelle phrase ----------
+function sIntroView(sn) {
+  return `<span class="q-tag blue">Nouvelle phrase</span>
+  <div class="prompt sprompt">${sentHtml(sn, { tap: true })}
+    <div class="fr">${esc(sn.fr)}</div>
+    <div>${spk(sn.text)}</div>
+  </div>
+  <div class="gloss" id="gloss">Touche un mot pour voir son sens</div>
+  <div class="actions" style="margin-top:auto"><button class="btn" data-act="introok">Suivant</button></div>`;
+}
+function sIntroAfter(sn) {
+  st.introduceSentence(sn.id);
+  sess.slearned.push(sn.id);
+  st.save();
+  setTimeout(() => speak(sn.text), 250);
+}
+actions.gloss = (el) => {
+  const sn = sess?.state?.sn; if (!sn) return;
+  const t = sn.toks[+el.dataset.i];
+  document.querySelectorAll('.tk.on').forEach(x => x.classList.remove('on'));
+  el.classList.add('on');
+  const g = document.getElementById('gloss');
+  if (g) g.innerHTML = `<b class="hzf">${esc(t.h)}</b> <span>${pyHtml(t.p, false)}</span> : ${esc(t.f || '—')}`;
+  speak(t.h);
+};
 
 function mountWriters(box, text, mode, size) {
   if (!box || !window.HanziWriter) return [];
@@ -284,8 +415,11 @@ function distractors(w, n, kind) {
   return out;
 }
 
-// ---------- Les 5 types d'exercices ----------
+const pinyinKeys = () => `<div class="keys">${[1, 2, 3, 4, 5].map(t => `<button class="opt" data-act="key" data-k="${t}">${t}<small>${t === 5 ? 'neutre' : ['ā', 'á', 'ǎ', 'à'][t - 1]}</small></button>`).join('')}<button class="opt" data-act="key" data-k="v">ü</button></div>`;
+
+// ---------- Exercices sur les mots ----------
 const EX = {
+  parler: { view: (w, it) => speakView(w, it), after: (w) => speakAfter(w) },
   sens: {
     view(w) {
       const c = st.getCard(w.id, 'sens');
@@ -294,21 +428,22 @@ const EX = {
       sess.state.opts = opts;
       if (!reverse) {
         return `<span class="q-tag">Sens</span><p class="q-label">Que signifie ce mot ?</p>
-          <div class="prompt">${ruby(w, st.showPinyin(w.id))}</div>
+          <div class="prompt">${face(w, st.showPinyin(w.id))}<div>${spk(w.h)}</div></div>
           <div class="opts">${opts.map((o, i) => `<button class="opt" data-act="mcq" data-i="${i}">${esc(o.f)}</button>`).join('')}</div>`;
       }
       return `<span class="q-tag">Sens</span><p class="q-label">Comment dit-on…</p>
-        <div class="prompt"><div class="fr">« ${esc(w.f)} »</div></div>
-        <div class="opts two">${opts.map((o, i) => `<button class="opt" data-act="mcq" data-i="${i}">${ruby(o, st.showPinyin(o.id))}</button>`).join('')}</div>`;
+        <div class="prompt"><div class="fr big">« ${esc(w.f)} »</div></div>
+        <div class="opts two">${opts.map((o, i) => `<button class="opt" data-act="mcq" data-i="${i}">${face(o, st.showPinyin(o.id))}</button>`).join('')}</div>`;
     },
   },
   ecoute: {
     view(w) {
+      const oral = st.isOral();
       const opts = shuffle([w, ...distractors(w, 3, 'sound')]);
       sess.state.opts = opts;
-      return `<span class="q-tag">Écoute</span><p class="q-label">Qu'est-ce que tu entends ?</p>
-        <div class="prompt"><button class="spk big" data-act="speak" data-text="${esc(w.h)}" aria-label="Réécouter">🔊</button><br><button class="spk" data-act="speak" data-slow="1" data-text="${esc(w.h)}" aria-label="Lentement">🐢</button></div>
-        <div class="opts two">${opts.map((o, i) => `<button class="opt" data-act="mcq" data-i="${i}">${ruby(o, st.showPinyin(o.id))}</button>`).join('')}</div>`;
+      return `<span class="q-tag">Écoute</span><p class="q-label">${oral ? 'Que veut dire ce mot ?' : 'Qu\'est-ce que tu entends ?'}</p>
+        <div class="prompt">${spk(w.h, true)}</div>
+        <div class="opts ${oral ? '' : 'two'}">${opts.map((o, i) => `<button class="opt" data-act="mcq" data-i="${i}">${oral ? esc(o.f) : ruby(o, st.showPinyin(o.id))}</button>`).join('')}</div>`;
     },
     after(w) { setTimeout(() => speak(w.h), 300); },
   },
@@ -317,14 +452,13 @@ const EX = {
       const chars = [...w.h], syls = syllables(w.p).map(parseSyl);
       sess.state.sel = syls.map(s => (s.hasVowel ? 0 : -1));
       const rows = syls.map((s, i) => !s.hasVowel ? '' : `<div class="tone-row">
-        <div class="syl"><span class="hzf">${chars[i]}</span><span>${s.base.replace(/v/g, 'ü')}</span></div>
-        <div class="tone-btns">${[1, 2, 3, 4, 5].map(t => `<button class="opt" data-act="tonepick" data-s="${i}" data-t="${t}">${toneSvg(t, 24)}${t === 5 ? '·' : t}</button>`).join('')}</div>
+        <div class="syl"><b>${s.base.replace(/v/g, 'ü')}</b><span class="hzf">${chars[i]}</span></div>
+        <div class="tone-btns">${[1, 2, 3, 4, 5].map(t => `<button class="opt t${t}" data-act="tonepick" data-s="${i}" data-t="${t}">${toneSvg(t, 24)}<small>${t === 5 ? 'neutre' : t}</small></button>`).join('')}</div>
       </div>`).join('');
-      return `<span class="q-tag">Tons</span><p class="q-label">Choisis le ton de chaque syllabe</p>
-        <div class="prompt" style="padding:4px 0 10px"><button class="spk big" data-act="speak" data-text="${esc(w.h)}">🔊</button><br><button class="spk" data-act="speak" data-slow="1" data-text="${esc(w.h)}">🐢</button>
+      return `<span class="q-tag">Tons</span><p class="q-label">Quel ton entends-tu ?</p>
+        <div class="prompt" style="padding:4px 0 10px">${spk(w.h, true)}
         <div class="muted small">${esc(w.f)}</div></div>
-        <div class="tone-rows">${rows}</div>
-        <div class="actions"><button class="btn" id="tonego" data-act="tonego" disabled>Vérifier</button></div>`;
+        <div class="tone-rows">${rows}</div>`;
     },
     after(w) { setTimeout(() => speak(w.h), 300); },
   },
@@ -334,7 +468,7 @@ const EX = {
         <div class="prompt" style="padding-bottom:10px">${ruby(w, false)}<div class="muted">${esc(w.f)}</div></div>
         <input id="pyin" class="pyin" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="ex : ni3 hao3" enterkeyhint="done">
         <div class="pyprev" id="pyprev"></div>
-        <div class="keys">${[1, 2, 3, 4, 5].map(t => `<button class="opt" data-act="key" data-k="${t}">${t}<small>${t === 5 ? 'neutre' : ['ā', 'á', 'ǎ', 'à'][t - 1]}</small></button>`).join('')}<button class="opt" data-act="key" data-k="v">ü</button></div>
+        ${pinyinKeys()}
         <div class="actions" style="margin-top:auto">
           <button class="btn" data-act="pygo">Vérifier</button>
           <button class="btn ghost" data-act="dunno">Je ne sais pas</button>
@@ -351,10 +485,10 @@ const EX = {
   dictee: {
     view(w) {
       return `<span class="q-tag">Dictée</span><p class="q-label">Écris en pinyin ce que tu entends</p>
-        <div class="prompt" style="padding:4px 0 10px"><button class="spk big" data-act="speak" data-text="${esc(w.h)}" aria-label="Réécouter">🔊</button><br><button class="spk" data-act="speak" data-slow="1" data-text="${esc(w.h)}" aria-label="Lentement">🐢</button></div>
+        <div class="prompt" style="padding:4px 0 10px">${spk(w.h, true)}</div>
         <input id="pyin" class="pyin" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="ex : ni3 hao3" enterkeyhint="done">
         <div class="pyprev" id="pyprev"></div>
-        <div class="keys">${[1, 2, 3, 4, 5].map(t => `<button class="opt" data-act="key" data-k="${t}">${t}<small>${t === 5 ? 'neutre' : ['ā', 'á', 'ǎ', 'à'][t - 1]}</small></button>`).join('')}<button class="opt" data-act="key" data-k="v">ü</button></div>
+        ${pinyinKeys()}
         <div class="actions" style="margin-top:auto">
           <button class="btn" data-act="pygo">Vérifier</button>
           <button class="btn ghost" data-act="dunno">Je ne sais pas</button>
@@ -399,7 +533,6 @@ const EX = {
         el.classList.add('active');
         quiz();
       };
-      // indice : montre l'animation du caractère en cours puis relance le tracé
       sess.state.trace = {
         hint: () => {
           if (idx >= ws.length) return;
@@ -414,12 +547,76 @@ const EX = {
   },
 };
 
+// ---------- Exercices sur les phrases ----------
+// phrases distractrices : de préférence déjà vues et qui partagent des mots (plus confusantes)
+function sentDistractors(sn, n) {
+  const words = new Set(sn.toks.map(t => t.h));
+  return shuffle(SENTENCES.filter(x => x.id !== sn.id && x.fr !== sn.fr).map(x => ({
+    x, sc: Math.random() * 2 + (S().sintro[x.id] ? 2 : 0) + x.toks.filter(t => words.has(t.h)).length * 1.5 - Math.abs(x.toks.length - sn.toks.length) * 0.3,
+  })).sort((a, b) => b.sc - a.sc).slice(0, n + 3)).slice(0, n).map(o => o.x);
+}
+const tileHtml = (t, i, where) => `<button class="wtile" data-act="${where}" data-i="${i}"><span class="tpy">${pyHtml(t.p)}</span><span class="thz hzf">${esc(t.h)}</span></button>`;
+
+const SEX = {
+  parler: { view: (sn, it) => speakView(sn, it), after: (sn) => speakAfter(sn) },
+  ecoute: {
+    view(sn) {
+      const opts = shuffle([sn, ...sentDistractors(sn, 3)]);
+      sess.state.opts = opts;
+      return `<span class="q-tag blue">Phrase · Écoute</span><p class="q-label">Que veut dire cette phrase ?</p>
+        <div class="prompt">${spk(sn.text, true)}</div>
+        <div class="opts">${opts.map((o, i) => `<button class="opt left" data-act="mcq" data-i="${i}">${esc(o.fr)}</button>`).join('')}</div>`;
+    },
+    after(sn) { setTimeout(() => speak(sn.text), 300); },
+  },
+  construire: {
+    view(sn) {
+      const need = sn.toks.filter(t => !t.punct);
+      const have = new Set(need.map(t => t.h));
+      // 2 mots pièges pris dans d'autres phrases
+      const pool = shuffle(SENTENCES.flatMap(x => x.toks)).filter(t => !t.punct && !have.has(t.h));
+      const traps = [];
+      for (const t of pool) { if (!traps.some(x => x.h === t.h)) traps.push(t); if (traps.length === 2) break; }
+      const bank = shuffle([...need, ...traps]);
+      sess.state.bank = bank; sess.state.pick = []; sess.state.need = need;
+      return `<span class="q-tag blue">Phrase · Construire</span><p class="q-label">Traduis en chinois</p>
+        <div class="prompt" style="padding:6px 0 12px"><div class="fr big">« ${esc(sn.fr)} »</div></div>
+        <div class="build-ans" id="bans"><span class="ph">Touche les mots dans l'ordre</span></div>
+        <div class="bank" id="bank">${bank.map((t, i) => tileHtml(t, i, 'bpick')).join('')}</div>
+        <div class="actions" style="margin-top:auto">
+          <button class="btn" id="bgo" data-act="bgo" disabled>Vérifier</button>
+          <button class="btn ghost" data-act="dunno">Je ne sais pas</button>
+        </div>`;
+    },
+  },
+};
+function drawBuild() {
+  const st_ = sess.state;
+  const ans = document.getElementById('bans'), bank = document.getElementById('bank');
+  ans.innerHTML = st_.pick.length ? st_.pick.map((bi, k) => tileHtml(st_.bank[bi], k, 'bdrop')).join('') : '<span class="ph">Touche les mots dans l\'ordre</span>';
+  bank.querySelectorAll('.wtile').forEach((b, i) => b.classList.toggle('used', st_.pick.includes(i)));
+  document.getElementById('bgo').disabled = st_.pick.length !== st_.need.length;
+}
+actions.bpick = (el) => {
+  const st_ = sess.state; if (st_.answered) return;
+  const i = +el.dataset.i; if (st_.pick.includes(i)) return;
+  st_.pick.push(i); speak(st_.bank[i].h); drawBuild();
+};
+actions.bdrop = (el) => { const st_ = sess.state; if (st_.answered) return; st_.pick.splice(+el.dataset.i, 1); drawBuild(); };
+actions.bgo = () => {
+  const st_ = sess.state; if (st_.answered) return;
+  const got = st_.pick.map(i => st_.bank[i].h).join('');
+  const ok = got === st_.need.map(t => t.h).join('');
+  document.getElementById('bans').classList.add(ok ? 'right' : 'wrong');
+  answer(ok, undefined, ok ? '' : 'Ta réponse : ' + st_.pick.map(i => st_.bank[i].p.replace(/\s/g, '')).join(' '));
+};
+
 actions.mcq = (el) => {
   if (sess.state.answered) return;
-  const i = +el.dataset.i, opts = sess.state.opts, w = sess.state.w;
-  const ok = opts[i].id === w.id;
+  const i = +el.dataset.i, opts = sess.state.opts, target = sess.state.w || sess.state.sn;
+  const ok = opts[i].id === target.id;
   document.querySelectorAll('.opt[data-act=mcq]').forEach((b, j) => {
-    if (opts[j].id === w.id) b.classList.add('right');
+    if (opts[j].id === target.id) b.classList.add('right');
     else if (j === i) b.classList.add('wrong');
   });
   answer(ok);
@@ -429,7 +626,9 @@ actions.tonepick = (el) => {
   const s = +el.dataset.s, t = +el.dataset.t;
   sess.state.sel[s] = t;
   el.parentElement.querySelectorAll('.opt').forEach(b => b.classList.toggle('sel', b === el));
-  document.getElementById('tonego').disabled = sess.state.sel.some(x => x === 0);
+  // vérification automatique dès que chaque syllabe a un ton
+  clearTimeout(sess.state.toneT);
+  if (!sess.state.sel.some(x => x === 0)) sess.state.toneT = setTimeout(actions.tonego, 280);
 };
 actions.tonego = () => {
   if (sess.state.answered) return;
@@ -439,7 +638,6 @@ actions.tonego = () => {
   syls.forEach((s, i) => {
     if (!s.hasVowel) return;
     const good = toneAccepted(chars[i], s.tone, sess.state.sel[i]);
-    // statistiques de confusion à l'oreille
     const sel = sess.state.sel[i];
     if (!sess.state.item.retry && s.tone <= 4 && sel >= 1 && sel <= 4) S().toneEar[s.tone - 1][(good ? s.tone : sel) - 1]++;
     if (!good) ok = false;
@@ -476,20 +674,146 @@ actions.tracehint = () => {
   toast('Regarde bien l\'ordre des traits 👀');
 };
 
+
+// ================================================================
+//  Expression orale : « Dis-le en chinois » et « Répète »
+// ================================================================
+// mode répétition (on voit et on entend le modèle) la première fois, puis production (on ne voit que le français)
+function speakMode(card, it) { return !card || card.reps === 0 || it.retry ? 'repeat' : 'produce'; }
+function speakView(target, it) {
+  const isS = !target.h;
+  const card = isS ? st.getSCard(target.id, 'parler') : st.getCard(target.id, 'parler');
+  const mode = speakMode(card, it);
+  sess.state.sp = { mode, hint: mode === 'repeat', phase: 'idle' };
+  const text = isS ? target.text : target.h;
+  const shown = isS ? sentHtml(target) : face(target);
+  const fr = isS ? target.fr : target.f;
+  return `<span class="q-tag green">${isS ? 'Phrase · ' : ''}Parler</span>
+    <p class="q-label">${mode === 'repeat' ? 'Écoute, puis répète à voix haute' : 'Dis-le en chinois'}</p>
+    <div class="prompt ${isS ? 'sprompt' : ''}">
+      ${mode === 'repeat' ? `${shown}<div class="muted" style="margin-top:8px">${esc(fr)}</div><div>${spk(text)}</div>`
+        : `<div class="fr big">« ${esc(fr)} »</div><div id="sphint" class="sphint"><button class="chip" data-act="shint">💡 Indice</button></div>`}
+    </div>
+    <div class="spres" id="spres"></div>
+    <div class="actions" style="margin-top:auto" id="spact">
+      <button class="micbig" id="micbig" data-act="srec"><span class="mi">🎙️</span><span id="miclbl">Touche et parle</span></button>
+      <button class="linkbtn" data-act="snospeak">Je ne peux pas parler maintenant</button>
+    </div>`;
+}
+function speakAfter(target) {
+  if (sess.state.sp.mode === 'repeat') setTimeout(() => speak(target.h || target.text), 300);
+}
+actions.shint = () => {
+  const stt = sess.state, t = stt.w || stt.sn; if (!stt.sp) return;
+  stt.sp.hint = true;
+  document.getElementById('sphint').innerHTML = `${stt.sn ? sentHtml(stt.sn) : face(stt.w)}<div>${spk(stt.sn ? stt.sn.text : stt.w.h)}</div>`;
+};
+actions.snospeak = () => {
+  S().speakPause = Date.now() + 30 * 60000; st.save();
+  toast('OK, pas d\'oral pendant 30 minutes 🤫');
+  sess.i++; renderSession();
+};
+actions.srec = async () => {
+  const stt = sess.state, sp = stt.sp; if (!sp || stt.answered || sp.phase === 'busy') return;
+  if (sp.phase === 'rec') { sp.rec?.stop(); return; }
+  if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) { sess.noMic = true; toast('Micro non disponible sur cet appareil'); sess.i++; return renderSession(); }
+  try { await openMic(); } catch (e) { sess.noMic = true; toast('Autorise le micro pour Xué (Safari : aA → Réglages du site)', 4000); sess.i++; return renderSession(); }
+  speechSynthesis?.cancel?.();
+  const isS = !!stt.sn;
+  const btn = document.getElementById('micbig');
+  sp.phase = 'rec'; btn.classList.add('on'); document.getElementById('miclbl').textContent = 'Je t\'écoute…';
+  sp.rec = await recordAuto({ maxMs: isS ? 9000 : 4000, silenceMs: isS ? 1300 : 900, onLevel: (l) => btn.style.setProperty('--lv', l.toFixed(2)) });
+  const blob = await sp.rec.done;
+  if (sess?.state !== stt) return;
+  sp.phase = 'busy'; btn.classList.remove('on'); btn.classList.add('busy'); document.getElementById('miclbl').textContent = 'Analyse…';
+  if (sp.url) URL.revokeObjectURL(sp.url);
+  sp.url = URL.createObjectURL(blob);
+  await evalSpeech(blob, sp.rec.ext);
+};
+actions.splay = () => { const u = sess?.state?.sp?.url; if (u) new Audio(u).play().catch(() => {}); };
+
+async function evalSpeech(blob, ext) {
+  const stt = sess.state, sp = stt.sp, isS = !!stt.sn;
+  const target = isS ? oral.targetOfSentence(stt.sn) : oral.targetOfWord(stt.w);
+  // tons de la voix (mots seulement : sur une phrase, l'analyse serait trop approximative)
+  let pitch = null;
+  if (!isS) {
+    const tones = syllables(stt.w.p).map(parseSyl).filter(x => x.hasVowel).map(x => x.tone);
+    pitch = await analyzeWord(blob, tones, S().voice?.base).catch(() => null);
+    if (pitch?.error) pitch = null;
+  }
+  const pitchOk = pitch ? pitch.syl.filter(x => x.ok != null).every(x => x.ok) : false;
+  const toneChips = pitch ? `<div class="small muted">Ta courbe de tons :</div><div class="sylrow">${pitch.syl.map((x, k) => {
+    const py = target.filter(t => parseSyl(t.p).hasVowel)[k]?.p || '';
+    return x.ok == null ? `<span class="sylres">${esc(py)}</span>` : `<span class="sylres ${x.ok ? 'ok' : 'ko'}">${x.ok ? '✓' : '✗'} ${esc(py)}${x.ok ? '' : `<small>entendu : ${x.got === 1 ? '1er' : x.got + 'e'} ton</small>`}</span>`;
+  }).join('')}</div>` : '';
+  let heard = null;
+  if (hasKey()) heard = await transcribe(blob, ext).catch(() => null);
+  if (sess?.state !== stt) return;
+  if (heard != null) {
+    const cmp = oral.compare(target, heard);
+    const v = oral.verdict(cmp, { isSentence: isS, hint: sp.hint && sp.mode === 'produce', pitchOk });
+    // Whisper a compris, mais ta courbe de voix suggère un autre ton : réussi, mais à surveiller
+    if (!isS && v.ok && pitch && !pitchOk) { v.grade = 2; v.msg = 'Compris ! Mais ta courbe de voix ressemble à un autre ton : exagère-le un peu.'; }
+    const marked = isS ? markedSentence(stt.sn, cmp.marks) : '';
+    const extra = `<div class="heard"><span class="muted small">Whisper a entendu :</span> <b class="hzf">${esc(cmp.heard || '(rien)')}</b></div>${marked}${toneChips}
+      <button class="chip" data-act="splay">▶ Ma voix</button>`;
+    if (!isS && st.isOral() && pitch) recordToneVoice(pitch);
+    answer(v.ok, v.ok ? v.grade : 1, v.msg, extra);
+    return;
+  }
+  // sans clé Groq (ou hors connexion) : tu compares toi-même ta voix au modèle
+  sp.phase = 'self';
+  document.getElementById('spres').innerHTML = `<div class="card selfcheck"><b>Compare ta voix au modèle</b>
+      <div class="row" style="justify-content:center;margin:10px 0"><button class="btn ghost sm" data-act="splay">▶ Ma voix</button><button class="btn ghost sm" data-act="speak" data-text="${esc(isS ? stt.sn.text : stt.w.h)}">🔊 Modèle</button></div>
+      ${toneChips}
+      ${hasKey() ? '' : '<p class="small muted" style="margin:8px 0 0">Connecte le prof IA (clé Groq gratuite) pour une correction automatique par Whisper.</p>'}</div>`;
+  document.getElementById('spact').innerHTML = `<div class="row"><button class="btn ko" data-act="sself" data-ok="0">À revoir</button><button class="btn ok" data-act="sself" data-ok="1">C'était bien</button></div>`;
+  if (pitch) recordToneVoice(pitch);
+}
+actions.sself = (el) => {
+  const stt = sess.state; if (stt.answered) return;
+  const ok = el.dataset.ok === '1';
+  answer(ok, ok ? (stt.sp.hint && stt.sp.mode === 'produce' ? 2 : 3) : 1, '', '<button class="chip" data-act="splay">▶ Ma voix</button>');
+};
+// statistiques des tons à la voix (onglet Progrès)
+function recordToneVoice(pitch) {
+  if (sess.state.item.retry) return;
+  const M = (S().toneVoice ||= [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]]);
+  for (const x of pitch.syl) {
+    if (x.ok == null) continue;
+    const want = x.ok ? x.got : x.spoken;
+    if (want >= 1 && want <= 4 && x.got >= 1 && x.got <= 4) M[want - 1][x.got - 1]++;
+  }
+}
+// la phrase avec les mots mal compris en rouge
+function markedSentence(sn, marks) {
+  let k = 0;
+  const html = sn.toks.filter(t => !t.punct).map(t => {
+    const n = oral.targetOfSentence({ toks: [t] }).length;
+    const ms = marks.slice(k, k + n); k += n;
+    const cls = ms.every(m => m.sound && m.tone) ? 'ok' : ms.some(m => m.sound) ? 'mid' : 'ko';
+    return `<span class="mk ${cls}">${pyHtml(t.p)}</span>`;
+  }).join(' ');
+  return `<div class="marked">${html}</div>`;
+}
+
 // ---------- Correction / notation ----------
-function answer(ok, forcedGrade, note = '') {
+function answer(ok, forcedGrade, note = '', extra = '') {
   const s = sess.state; if (s.answered) return;
   s.answered = true;
-  const it = s.item, w = s.w;
+  const it = s.item, w = s.w, sn = s.sn;
   const secs = (Date.now() - s.t) / 1000;
   logTime();
   if (!it.retry) {
-    const g = forcedGrade ?? (ok ? (secs > (it.f === 'pinyin' || it.f === 'ton' || it.v ? 20 : 12) ? 2 : 3) : 1);
-    st.grade(w.id, it.f, ok ? Math.max(2, g) : 1);
+    const slow = sn ? 25 : (it.f === 'pinyin' || it.f === 'ton' || it.f === 'parler' || it.v ? 20 : 12);
+    const g = forcedGrade ?? (ok ? (secs > slow ? 2 : 3) : 1);
+    if (sn) st.gradeSentence(sn.id, it.f, ok ? Math.max(2, g) : 1);
+    else st.grade(w.id, it.f, ok ? Math.max(2, g) : 1);
   }
   if (ok) {
     sess.combo++; sess.best = Math.max(sess.best, sess.combo);
-    const gain = it.retry ? 5 : 10 + Math.min(sess.combo - 1, 5);
+    const gain = it.retry ? 5 : (sn ? 15 : 10) + Math.min(sess.combo - 1, 5);
     sess.xp += gain; st.addXp(gain);
     if (!it.retry) sess.ok++;
     sfx.ok();
@@ -506,21 +830,32 @@ function answer(ok, forcedGrade, note = '') {
     }
   }
   const praise = ['Bravo !', 'Excellent !', 'Parfait !', '太好了 !', 'Super !', '很好 !'];
+  const text = sn ? sn.text : w.h;
   const sheet = document.createElement('div');
   sheet.className = 'sheet ' + (ok ? 'ok' : 'ko');
-  sheet.innerHTML = `<h3>${ok ? praise[(Math.random() * praise.length) | 0] : 'Pas tout à fait…'}</h3>
-    <div class="ans">${ruby(w, true)}<div class="grow"><b>${esc(w.f)}</b>${note ? `<div class="small muted">${esc(note)}</div>` : ''}</div>
-    <button class="spk" data-act="speak" data-text="${esc(w.h)}">🔊</button>${S().settings.groqKey ? `<button class="spk" data-act="explain" data-id="${esc(w.id)}" aria-label="Explication par l'IA">🤖</button>` : ''}</div>
-    <button class="btn ${ok ? 'ok' : 'ko'}" data-act="next">Continuer</button>`;
+  const body = sn
+    ? `<div class="ans col">${sentHtml(sn)}<div><b>${esc(sn.fr)}</b>${note ? `<div class="small muted">${esc(note)}</div>` : ''}</div></div>`
+    : `<div class="ans">${face(w)}<div class="grow"><b>${esc(w.f)}</b>${note ? `<div class="small muted">${esc(note)}</div>` : ''}</div></div>`;
+  sheet.innerHTML = `<div class="sheet-head"><h3>${ok ? praise[(Math.random() * praise.length) | 0] : 'Pas tout à fait…'}</h3>
+    <span class="sheet-tools"><button class="spk sm" data-act="speak" data-text="${esc(text)}" aria-label="Réécouter">🔊</button>${w && S().settings.groqKey ? `<button class="spk sm" data-act="explain" data-id="${esc(w.id)}" aria-label="Explication par l'IA">🤖</button>` : ''}</span></div>
+    ${body}${extra ? `<div class="extra">${extra}</div>` : ''}
+    <button class="btn ${ok ? 'ok auto' : 'ko'}" data-act="next">Continuer</button>`;
   const sessEl = document.querySelector('.sess');
   sessEl.appendChild(sheet);
   sessEl.style.paddingBottom = sheet.offsetHeight + 16 + 'px';
   sheet.scrollIntoView({ block: 'end' });
-  if (it.f !== 'ecoute' || !ok) setTimeout(() => speak(w.h), 200);
+  if (!(it.f === 'ecoute' && ok && !sn) && !(it.f === 'parler' && ok)) setTimeout(() => speak(text), 200);
   const top = document.querySelector('.sess-top');
   if (top) top.outerHTML = sessTop();
+  // bonne réponse : on passe tout seul à la suite (sauf si tu touches la fiche)
+  if (ok) {
+    const delay = it.f === 'parler' ? 2800 : sn ? 2600 : 1400;
+    s.auto = setTimeout(() => { if (sess && sess.state === s && !s.hold) actions.next(); }, delay);
+    sheet.querySelector('.btn.auto').style.setProperty('--d', delay + 'ms');
+    sheet.addEventListener('click', (e) => { if (!e.target.closest('[data-act=next]')) { s.hold = true; sheet.querySelector('.btn')?.classList.remove('auto'); } });
+  }
 }
-actions.next = () => { sess.i++; renderSession(); window.scrollTo(0, 0); };
+actions.next = () => { clearTimeout(sess?.state?.auto); sess.i++; renderSession(); window.scrollTo(0, 0); };
 
 // ---------- Fin de session ----------
 function renderEnd() {
@@ -531,6 +866,7 @@ function renderEnd() {
   if (sess.ok + sess.ko > 0 && acc >= 0.9) { st.addXp(20); sess.xp += 20; }
   sfx.done();
   const learned = sess.learned.map(W);
+  const slearned = sess.slearned.map(id => SENT_BY_ID[id]);
   app.innerHTML = `<div class="sess"><div class="end">
     <div class="big">${acc >= 0.9 ? '🏆' : acc >= 0.7 ? '🎉' : '💪'}</div>
     <h1 style="margin:6px 0">${acc >= 0.9 ? 'Session parfaite !' : 'Session terminée !'}</h1>
@@ -541,12 +877,13 @@ function renderEnd() {
       <div class="kpi"><b>${mins}</b><span>min</span></div>
     </div>
     ${acc >= 0.9 && sess.ok + sess.ko > 0 ? '<p class="muted small">+20 XP bonus pour 90 % de réussite</p>' : ''}
-    ${learned.length ? `<div class="card" style="text-align:left"><b>Nouveaux mots appris</b><div class="row" style="flex-wrap:wrap;gap:14px;margin-top:10px">${learned.map(w => `<button data-act="speak" data-text="${esc(w.h)}" style="text-align:center"><div class="hzf" style="font-size:28px">${w.h}</div><div class="small muted">${esc(w.p)}</div></button>`).join('')}</div></div>` : ''}
+    ${learned.length ? `<div class="card" style="text-align:left"><b>Nouveaux mots appris</b><div class="row" style="flex-wrap:wrap;gap:14px;margin-top:10px">${learned.map(w => `<button data-act="speak" data-text="${esc(w.h)}" class="lw">${face(w)}</button>`).join('')}</div></div>` : ''}
+    ${slearned.length ? `<div class="card" style="text-align:left"><b>Nouvelles phrases</b>${slearned.map(x => `<button class="srow" data-act="speak" data-text="${esc(x.text)}"><span class="fpy">${x.toks.filter(t => !t.punct).map(t => pyHtml(t.p)).join(' ')}</span><span class="small muted">${esc(x.fr)}</span></button>`).join('')}</div>` : ''}
   </div><div class="actions" style="margin-top:auto"><button class="btn" data-act="endok">Continuer</button></div></div>`;
   confetti();
   sess.finished = true;
 }
-actions.endok = () => { sess = null; tab = 'home'; render(); };
+actions.endok = () => { closeMic(); sess = null; tab = 'home'; render(); };
 
 function confetti() {
   const box = document.createElement('div'); box.className = 'confetti';
@@ -570,13 +907,21 @@ let wq = '', wlvl = 0;
 function wordsScreen() {
   return `<div class="topbar"><h1>Mots</h1><span class="pill">${Object.keys(S().intro).length}/${WORDS.length}</span></div>
     <input class="search" id="wsearch" type="search" placeholder="Chercher : 你好, ni hao, bonjour…" value="${esc(wq)}" autocomplete="off" autocapitalize="off">
-    <div class="chips">${[[0, 'Tous'], [1, 'HSK 1'], [2, 'HSK 2'], [3, 'HSK 3'], ...(WORDS.some(w => !w.lvl) ? [[4, 'Perso']] : []), [9, 'Appris'], [8, 'À renforcer']].map(([v, l]) => `<button class="chip ${wlvl === v ? 'on' : ''}" data-act="wlvl" data-v="${v}">${l}</button>`).join('')}</div>
+    <div class="chips">${[[0, 'Tous'], [1, 'HSK 1'], [2, 'HSK 2'], [3, 'HSK 3'], ...(WORDS.some(w => !w.lvl) ? [[4, 'Perso']] : []), [9, 'Appris'], [8, 'À renforcer'], [7, 'Phrases']].map(([v, l]) => `<button class="chip ${wlvl === v ? 'on' : ''}" data-act="wlvl" data-v="${v}">${l}</button>`).join('')}</div>
     <div class="wlist" id="wlist"></div>`;
 }
 function fillWords() {
   const box = document.getElementById('wlist'); if (!box) return;
   const norm = (s) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/\s/g, '');
   const q = norm(wq);
+  if (wlvl === 7) {
+    const list = SENTENCES.filter(x => !q || x.text.includes(wq.trim()) || norm(x.toks.map(t => t.p).join('')).includes(q) || norm(x.fr).includes(q));
+    box.innerHTML = list.map(x => {
+      const seen = S().sintro[x.id], ready = st.sentenceReady(x);
+      return `<button class="wrow srow2 ${seen ? '' : 'locked'}" data-act="speak" data-text="${esc(x.text)}"><span class="grow"><div class="fpy">${x.toks.filter(t => !t.punct).map(t => pyHtml(t.p)).join(' ')}</div><div class="hzf small muted">${esc(x.hz)}</div><div class="fr">${esc(x.fr)}</div></span><span class="dot ${seen ? 'l3' : ready ? 'l1' : ''}" title="${seen ? 'Déjà vue' : ready ? 'Prête à apprendre' : 'Bientôt (mots pas encore appris)'}"></span></button>`;
+    }).join('') || '<p class="muted" style="padding:16px;text-align:center">Aucune phrase trouvée</p>';
+    return;
+  }
   let list = WORDS.filter(w => {
     if (wlvl && wlvl < 4 && w.lvl !== wlvl) return false;
     if (wlvl === 4 && w.lvl) return false;
@@ -589,6 +934,7 @@ function fillWords() {
   box.innerHTML = list.slice(0, 300).map(w => {
     const m = S().intro[w.id] ? st.mastery(w.id) : -1;
     const cls = m < 0 ? '' : m < 0.2 ? 'l1' : m < 0.6 ? 'l2' : 'l3';
+    if (st.isOral()) return `<button class="wrow" data-act="word" data-id="${esc(w.id)}"><span class="wpy">${pyHtml(w.p)}<small class="hzf">${esc(w.h)}</small></span><span class="grow fr">${esc(w.f)}</span><span class="dot ${cls}" title="${m < 0 ? 'Pas encore vu' : 'Maîtrise ' + pct(m)}"></span></button>`;
     return `<button class="wrow" data-act="word" data-id="${esc(w.id)}"><span class="hzf">${w.h}</span><span class="grow"><div class="py">${esc(w.p)}</div><div class="fr">${esc(w.f)}</div></span><span class="dot ${cls}" title="${m < 0 ? 'Pas encore vu' : 'Maîtrise ' + pct(m)}"></span></button>`;
   }).join('') || '<p class="muted" style="padding:16px;text-align:center">Aucun mot trouvé</p>';
 }
@@ -607,12 +953,13 @@ function openWord(id) {
     return `<div class="meter"><span class="lab">${st.FACET_LABEL[f]}</span><span class="track"><i style="width:${c && c.reps ? r * 100 : 0}%"></i></span><span class="v">${lab}</span></div>`;
   }).join('');
   bg.innerHTML = `<div class="modal">
-    <div style="text-align:center">${ruby(w, true).replace('class="hz"', 'class="hz" style="font-size:60px"')}
+    <div style="text-align:center" class="mword">${st.isOral() ? face(w) : ruby(w, true).replace('class="hz"', 'class="hz" style="font-size:60px"')}
       <div style="font-size:20px;font-weight:700;margin-top:4px">${esc(w.f)}</div>
       <div class="muted small">${levelLabel(w)}</div>
       <button class="spk" data-act="speak" data-text="${esc(w.h)}">🔊</button><button class="spk" data-act="speak" data-slow="1" data-text="${esc(w.h)}">🐢</button>
     </div>
-    <div class="writers" id="mwriters"></div>
+    ${st.isOral() ? '' : '<div class="writers" id="mwriters"></div>'}
+    ${(() => { const ex = exampleFor(w); return ex ? `<button class="example" data-act="speak" data-text="${esc(ex.text)}"><span class="eyebrow">Exemple 🔊</span>${sentHtml(ex)}<span class="small muted">${esc(ex.fr)}</span></button>` : ''; })()}
     <button class="btn ghost" data-act="explain" data-id="${esc(w.id)}" style="margin-bottom:10px">🤖 Explique-moi ce mot</button>
     ${seen ? `<p class="sec-title">Mémoire dans 7 jours</p><div class="card">${meters}<p class="muted small" style="margin:8px 0 0">Chance de t'en souvenir dans une semaine sans réviser, pour chaque compétence.</p></div>` : '<p class="muted" style="text-align:center">Pas encore appris — il arrivera dans une prochaine leçon.</p>'}
     <button class="btn ghost" data-act="close">Fermer</button>
@@ -620,7 +967,7 @@ function openWord(id) {
   bg.addEventListener('click', (e) => { if (e.target === bg) closeModal(); });
   document.body.appendChild(bg);
   bg.addEventListener('click', (e) => { const el = e.target.closest('[data-act]'); if (el && actions[el.dataset.act]) actions[el.dataset.act](el, e); });
-  mountWriters(bg.querySelector('#mwriters'), w.h, 'animate', 96);
+  if (!st.isOral()) mountWriters(bg.querySelector('#mwriters'), w.h, 'animate', 96);
   speak(w.h);
 }
 
@@ -675,7 +1022,7 @@ function statsScreen() {
     <div class="kpi"><b>${rev ? pct(ok / rev) : '—'}</b><span>réussite 30 j</span></div>
     <div class="kpi"><b>${totalMin}</b><span>min au total</span></div>
     <div class="kpi"><b>${st.currentStreak()}</b><span>jours de série</span></div>
-    <div class="kpi"><b>${st.level().n}</b><span>niveau</span></div>
+    <div class="kpi"><b>${Object.keys(s.sintro).length}</b><span>phrases vues</span></div>
   </div>
   <div class="card"><h2>Minutes d'étude</h2><p class="muted small" style="margin:0 0 12px">14 derniers jours · objectif ${s.settings.goalMin} min</p>${bars(series, maxM, x => `${x.k.slice(8)}/${x.k.slice(5, 7)} : ${x.m} min`)}</div>
   <div class="card"><h2>Tes compétences</h2><p class="muted small" style="margin:0 0 8px">Chance moyenne de t'en souvenir dans 7 jours (mots vus)</p>
@@ -779,16 +1126,22 @@ function settingsScreen() {
   return `<div class="topbar"><h1>Réglages</h1></div>
   <p class="sec-title">Apprentissage</p>
   <div class="card">
+    <div class="set"><label>Mode d'étude<span class="muted">${st.isOral() ? 'Pinyin en grand, caractères en petit, pas d\'écriture' : 'Caractères, pinyin et écriture à la main'}</span></label>${sel('studyMode', [['oral', 'Oral (pinyin)'], ['complet', 'Complet']])}</div>
+    <div class="set"><label>Couleurs des tons<span class="muted">${pyHtml('yī yí yǐ yì yi', false)}</span></label><input type="checkbox" class="switch" data-set="toneColors" ${s.toneColors ? 'checked' : ''}></div>
+    <div class="set"><label>Exercices oraux<span class="muted">Dire les mots et les phrases à voix haute</span></label><input type="checkbox" class="switch" data-set="speaking" ${s.speaking ? 'checked' : ''}></div>
+    <div class="set"><label>Rythme intelligent<span class="muted">Adapte le nombre de mots nouveaux à ta réussite</span></label><input type="checkbox" class="switch" data-set="smartPace" ${s.smartPace ? 'checked' : ''}></div>
+    <div class="set"><label>Nouvelles phrases par leçon</label>${sel('newSentences', [[0, '0'], [2, '2'], [3, '3'], [5, '5']])}</div>
     <div class="set"><label>Nouveaux mots par leçon</label>${sel('newPerLesson', [[3, '3'], [5, '5'], [8, '8'], [10, '10']])}</div>
     <div class="set"><label>Nouveaux mots max / jour</label>${sel('newPerDay', [[10, '10'], [15, '15'], [20, '20'], [30, '30'], [50, '50']])}</div>
     <div class="set"><label>Objectif quotidien</label>${sel('goalMin', [[10, '10 min'], [20, '20 min'], [30, '30 min'], [45, '45 min'], [60, '60 min']])}</div>
-    <div class="set"><label>Pinyin au-dessus des caractères<span class="muted">Auto : disparaît quand tu connais bien le mot</span></label>${sel('pinyinMode', [['auto', 'Auto'], ['always', 'Toujours'], ['never', 'Jamais']])}</div>
+    ${st.isOral() ? '' : `<div class="set"><label>Pinyin au-dessus des caractères<span class="muted">Auto : disparaît quand tu connais bien le mot</span></label>${sel('pinyinMode', [['auto', 'Auto'], ['always', 'Toujours'], ['never', 'Jamais']])}</div>`}
     <div class="set"><label>Calibrage de la voix<span class="muted">${S().voice?.base != null ? 'Voix calibrée : ~' + Math.round(100 * Math.pow(2, S().voice.base / 12)) + ' Hz' : 'Pas encore fait'}</span></label><button class="btn ghost sm" data-act="recalib">Refaire</button></div>
-    <div class="set"><label>Exercices d'écriture<span class="muted">Tracer les caractères au doigt</span></label><input type="checkbox" class="switch" data-set="trace" ${s.trace ? 'checked' : ''}></div>
+    ${st.isOral() ? '' : `<div class="set"><label>Exercices d'écriture<span class="muted">Tracer les caractères au doigt</span></label><input type="checkbox" class="switch" data-set="trace" ${s.trace ? 'checked' : ''}></div>`}
   </div>
   <p class="sec-title">Audio</p>
   <div class="card">
     <div class="set"><label>Vitesse de la voix<span class="muted">${esc(voiceName())}</span></label>${sel('rate', [[0.6, 'Lente'], [0.8, 'Normale'], [1, 'Rapide']])}</div>
+    <div class="set"><label>Prof IA : envoi direct de la voix<span class="muted">Ce que tu dis au micro part tout de suite</span></label><input type="checkbox" class="switch" data-set="voiceAuto" ${s.voiceAuto ? 'checked' : ''}></div>
     <div class="set"><label>Tester la voix</label><button class="btn ghost sm" data-act="speak" data-text="你好，我在学习中文。">🔊 你好</button></div>
     <p class="muted small" style="margin:8px 0 0">Astuce iPhone : pour une voix plus naturelle, va dans Réglages → Accessibilité → Contenu énoncé → Voix → Chinois, et télécharge une voix « améliorée ».</p>
   </div>
@@ -804,16 +1157,17 @@ function settingsScreen() {
     </div>
     <input type="file" id="impfile" accept=".json,application/json" hidden>
   </div>
-  <p class="muted small" style="text-align:center;margin-top:24px">Xué v3.0 · ${WORDS.length} mots HSK 1-3 · Mémoire FSRS</p>`;
+  <p class="muted small" style="text-align:center;margin-top:24px">Xué v4.1 · ${WORDS.length} mots HSK 1-3 · ${SENTENCES.length} phrases · Mémoire FSRS</p>`;
 }
 after.settings = () => {
   tutor.afterSettings();
   app.querySelectorAll('[data-set]').forEach(el => {
     el.addEventListener('change', () => {
       const k = el.dataset.set; let v = el.type === 'checkbox' ? el.checked : el.value;
-      if (['newPerLesson', 'newPerDay', 'goalMin', 'rate'].includes(k)) v = +v;
+      if (['newPerLesson', 'newPerDay', 'goalMin', 'rate', 'newSentences'].includes(k)) v = +v;
       S().settings[k] = v; st.save();
       toast('Enregistré ✓');
+      if (k === 'studyMode' || k === 'toneColors') render();
     });
   });
   document.getElementById('impfile').addEventListener('change', async (e) => {

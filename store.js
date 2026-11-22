@@ -1,10 +1,12 @@
 // Sauvegarde locale (sur le téléphone) + statistiques, XP et série de jours.
 import { newCard, review, recallNow } from './fsrs.js';
 import { WORDS, WORD_BY_ID } from './data.js';
+import { SENTENCES, SENT_BY_ID } from './sentences.js';
 
 const KEY = 'xue-data-v1';
-export const FACETS = ['sens', 'ecoute', 'ton', 'pinyin', 'trace'];
-export const FACET_LABEL = { sens: 'Sens', ecoute: 'Écoute', ton: 'Tons', pinyin: 'Pinyin', trace: 'Écriture' };
+export const FACETS = ['sens', 'ecoute', 'ton', 'parler', 'pinyin', 'trace'];
+export const SFACETS = ['ecoute', 'construire', 'parler'];
+export const FACET_LABEL = { sens: 'Sens', ecoute: 'Écoute', ton: 'Tons', parler: 'Parler', pinyin: 'Pinyin', trace: 'Écriture' };
 
 const DEFAULTS = {
   cards: {},          // "motId|facette" -> carte FSRS
@@ -21,9 +23,14 @@ const DEFAULTS = {
   toneEar: [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]],   // [ton attendu][ton choisi] à l'oreille
   toneVoice: [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]], // [ton attendu][ton entendu] à la voix
   exams: [],          // examens blancs : { lvl, score, date, parts }
+  sintro: {},         // phrases vues : id -> date
+  scards: {},         // "phraseId|ecoute" ou "phraseId|construire" -> carte FSRS
+  reteach: {},        // mots très oubliés réexpliqués : id -> date
+  speakPause: 0,      // « je ne peux pas parler maintenant » : jusqu'à quand
   settings: {
     newPerLesson: 5, newPerDay: 20, goalMin: 30, pinyinMode: 'auto',
     rate: 0.8, trace: true, groqKey: '', groqModel: '', chatPinyin: true,
+    studyMode: 'oral', toneColors: true, newSentences: 3, speaking: true, smartPace: true, voiceAuto: true,
   },
 };
 
@@ -42,6 +49,20 @@ export function addCustomWord(h, p, f) {
   introduce(id);
   save();
   return w;
+}
+
+// Ajoute les cartes des compétences arrivées après coup (ex. « Parler ») aux mots et phrases déjà appris,
+// étalées sur 2 semaines pour ne pas créer une montagne de révisions d'un coup.
+function ensureCards() {
+  const now = Date.now(); let added = 0;
+  const spread = () => now + Math.floor(Math.random() * 14) * 86400000;
+  for (const wid of Object.keys(S.intro)) for (const f of FACETS) {
+    if (!S.cards[wid + '|' + f]) { S.cards[wid + '|' + f] = newCard(spread()); added++; }
+  }
+  for (const sid of Object.keys(S.sintro || {})) for (const f of SFACETS) {
+    if (!S.scards[sid + '|' + f]) { S.scards[sid + '|' + f] = newCard(spread()); added++; }
+  }
+  if (added) save();
 }
 
 function load() {
@@ -70,7 +91,13 @@ export const today = () => (S.days[dayKey()] ||= { xp: 0, secs: 0, rev: 0, ok: 0
 
 export const cardId = (wid, f) => wid + '|' + f;
 export const getCard = (wid, f) => S.cards[cardId(wid, f)];
-export const activeFacets = () => FACETS.filter(f => f !== 'trace' || S.settings.trace);
+export const isOral = () => S.settings.studyMode === 'oral';
+// Mode oral : le pinyin passe au premier plan, pas d'écriture ni de saisie du pinyin d'après les caractères
+export const speakingOn = () => S.settings.speaking && Date.now() > (S.speakPause || 0);
+export const activeFacets = () => {
+  const base = isOral() ? ['sens', 'ecoute', 'ton', 'parler'] : FACETS.filter(f => f !== 'trace' || S.settings.trace);
+  return S.settings.speaking ? base : base.filter(f => f !== 'parler');
+};
 
 export function introduce(wid, dueSpread = 0) {
   if (S.intro[wid]) return;
@@ -126,6 +153,21 @@ export function dueCards(now = Date.now()) {
   return out;
 }
 
+// Rythme intelligent : moins de nouveaux mots quand tu oublies beaucoup ou que les révisions s'accumulent,
+// plus quand tout est solide.
+export function smartPace() {
+  const base = S.settings.newPerLesson;
+  if (!S.settings.smartPace) return { n: base, why: '' };
+  let rev = 0, ok = 0;
+  for (let i = 0; i < 3; i++) { const d = S.days[dayKey(Date.now() - i * 86400000)]; if (d) { rev += d.rev; ok += d.ok; } }
+  const acc = rev >= 25 ? ok / rev : null;
+  const backlog = dueCards().length;
+  if (backlog > 150) return { n: 0, why: 'pause', acc, backlog };
+  if (backlog > 80 || (acc !== null && acc < 0.75)) return { n: Math.max(2, Math.round(base / 2)), why: 'slow', acc, backlog };
+  if (acc !== null && acc >= 0.9 && backlog < 30) return { n: base + 3, why: 'fast', acc, backlog };
+  return { n: base, why: '', acc, backlog };
+}
+
 export function nextNewWords(n) {
   const left = Math.max(0, S.settings.newPerDay - today().nw);
   return WORDS.filter(w => !S.intro[w.id]).slice(0, Math.min(n, left));
@@ -151,6 +193,42 @@ export function showPinyin(wid) {
   return !c || c.s < 10; // s'efface quand le mot est solide (> 10 jours)
 }
 
+// ---------- Phrases ----------
+// (SFACETS est défini en haut du fichier)
+export function introduceSentence(sid) {
+  if (S.sintro[sid]) return;
+  S.sintro[sid] = Date.now();
+  for (const f of SFACETS) S.scards[sid + '|' + f] = newCard(Date.now());
+}
+export function gradeSentence(sid, f, g) {
+  const id = sid + '|' + f;
+  S.scards[id] = review(S.scards[id] || newCard(), g);
+  const t = today(); t.rev++; if (g > 1) t.ok++;
+  save();
+}
+export const getSCard = (sid, f) => S.scards[sid + '|' + f];
+// une phrase est disponible quand tous ses mots HSK ont été appris
+export const sentenceReady = (s, extra) => s.toks.every(t => !t.wid || S.intro[t.wid] || extra?.has(t.wid));
+// prefer : mots qu'on vient d'apprendre (ils comptent comme connus et passent en priorité)
+export function nextNewSentences(n, prefer = []) {
+  const extra = new Set(prefer);
+  const ready = SENTENCES.filter(s => !S.sintro[s.id] && sentenceReady(s, extra));
+  // d'abord celles qui contiennent les mots qu'on vient d'apprendre
+  const pref = new Set(prefer);
+  ready.sort((a, b) => (b.toks.some(t => pref.has(t.wid)) - a.toks.some(t => pref.has(t.wid))) || a.ord - b.ord);
+  return ready.slice(0, n);
+}
+export function dueSentences(now = Date.now()) {
+  const out = [];
+  for (const [id, c] of Object.entries(S.scards)) {
+    const [sid, f] = id.split('|');
+    if (f === 'parler' && !S.settings.speaking) continue;
+    if (SENT_BY_ID[sid] && c.due <= now) out.push({ sid, f, c, r: recallNow(c, now) });
+  }
+  out.sort((a, b) => (a.c.reps === 0) - (b.c.reps === 0) || a.r - b.r);
+  return out;
+}
+
 export function exportData() { return JSON.stringify(S); }
 export function importData(json) {
   const d = JSON.parse(json);
@@ -160,3 +238,6 @@ export function importData(json) {
   save(true);
 }
 export function resetAll() { S = structuredClone(DEFAULTS); save(true); }
+
+// cartes manquantes (nouvelles compétences) : à la fin, quand tout est initialisé
+ensureCards();

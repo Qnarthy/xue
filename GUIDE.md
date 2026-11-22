@@ -51,6 +51,17 @@ Ce que tu peux faire ensuite :
 
 Le détecteur de tons est un **miroir**, pas un juge. Il marche bien sur les mots isolés, mais peut se tromper avec du bruit ou une voix très chuchotée. Si le calibrage te semble faux, refais-le dans Réglages → Calibrage de la voix.
 
+## Les nouveautés de la V4
+- **Mode oral** (par défaut) : le pinyin en grand, chaque ton a sa couleur (1er rouge, 2e orange, 3e vert, 4e bleu). Les caractères restent en petit. Tu peux repasser en mode complet dans Réglages → Mode d'étude.
+- **🗣️ Parler** : l'appli te fait dire les mots et les phrases à voix haute. La première fois, tu répètes après le modèle ; ensuite, tu ne vois que le français et tu dois le dire en chinois. Le micro s'arrête tout seul quand tu as fini. Avec la clé Groq, Whisper corrige automatiquement ; sans clé, tu compares ta voix au modèle.
+- **Je ne peux pas parler maintenant** : coupe l'oral pendant 30 minutes (dans le métro, par exemple).
+- **💬 Phrases** : 115 phrases du quotidien qui arrivent au fur et à mesure que tu connais leurs mots.
+- **Rythme intelligent** : moins de mots nouveaux quand tu oublies beaucoup, plus quand tout est solide. Les mots que tu oublies souvent sont réexpliqués.
+- **Prof IA** : ce que tu dis au micro part tout de suite, comme une vraie conversation.
+
+## Partager l'appli à un ami
+Envoie-lui simplement l'adresse **https://qnarthy.github.io/xue/**. Il l'installe comme toi (Safari → Partager → Sur l'écran d'accueil). Chacun a ses propres progrès sur son téléphone. Pour le prof IA, il crée **sa propre clé Groq** : ne partage jamais la tienne.
+
 ## Astuces
 - **Le son** : si tu n'entends rien, désactive le mode silencieux (le bouton sur le côté de l'iPhone).
 - **Une meilleure voix** : va dans Réglages iPhone → Accessibilité → Contenu énoncé → Voix → Chinois (Chine continentale). Télécharge une voix « Améliorée », par exemple Tingting.

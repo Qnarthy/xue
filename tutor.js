@@ -315,7 +315,11 @@ async function onRecorded(r) {
   try {
     const text = await transcribe(blob, r.ext);
     if (!text) toast('Je n\'ai rien entendu, réessaie');
-    else if (inp) { inp.value = text; view.lastHeard = text; toast('Vérifie puis envoie ➤'); }
+    else if (inp) {
+      inp.value = text; view.lastHeard = text;
+      // mode conversation : ce que tu as dit part tout de suite
+      if (S().settings.voiceAuto) actions.send(); else toast('Vérifie puis envoie ➤');
+    }
   } catch (e) { toast(e.message || 'Transcription impossible', 3500); }
   if (btn) { btn.textContent = '🎤'; btn.disabled = false; }
 }
